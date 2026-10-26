@@ -1,0 +1,7 @@
+-- visuals: track names are live levels (0..1) · t = seconds
+osc 8+bass*20 .15 .9
+add shape 4 .2+drums*.5 .05
+kaleid 5
+rotate 0 .08
+color .9 .5 1
+feedback .8

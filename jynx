@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# jynx [name]   open name.jynx + name.vis (created from templates if missing)
+# jynx engine   run only the engine (audio + full-screen visuals) in this terminal;
+#                editors started afterwards in other terminals connect to it
+# jynx keys [pattern]  play a pattern from the laptop keyboard (needs a running engine)
+# jynx stop     stop any running engine
+set -e
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+PORT="${JYNX_PORT:-7400}"
+
+if [ "$1" = "stop" ]; then
+  pkill -fi -- "-m engine" && echo "jynx: engine stopped" || echo "jynx: no engine running"
+  exit 0
+fi
+
+if [ "$1" = "keys" ]; then
+  cd "$ROOT"
+  PY="$ROOT/.venv/bin/python"; [ -x "$PY" ] || PY=python3
+  exec "$PY" -m engine.keys "${2:-keys}"
+fi
+
+if [ "$1" = "engine" ]; then
+  cd "$ROOT"
+  PY="$ROOT/.venv/bin/python"; [ -x "$PY" ] || PY=python3
+  exec "$PY" -m engine
+fi
+
+# an engine is already running in another terminal: open just the editor
+if (echo > "/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
+  export JYNX_ENGINE=external
+fi
+
+NAME="${1:-live}"
+NAME="${NAME%.jynx}"
+[ -f "$NAME.jynx" ] || cp "$ROOT/templates/live.jynx" "$NAME.jynx"
+[ -f "$NAME.vis" ] || cp "$ROOT/templates/live.vis" "$NAME.vis"
+exec nvim -u "$ROOT/nvim/init.lua" "$NAME.jynx" -c "JynxStart"
