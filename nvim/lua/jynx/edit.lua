@@ -279,16 +279,32 @@ end
 
 M.ALIASES = {
   cutoff = "lpf", lp = "lpf", ctf = "lpf", hcutoff = "hpf", hp = "hpf", resonance = "lpq",
-  delayfeedback = "delayfb", dfb = "delayfb", dt = "delaytime", att = "attack", dec = "decay",
-  sus = "sustain", rel = "release", trans = "transpose", vel = "velocity",
+  delayfeedback = "delayfb", dfb = "delayfb", dt = "delaytime", delayt = "delaytime", att = "attack",
+  dec = "decay", sus = "sustain", rel = "release", trans = "transpose", vel = "velocity",
+  legato = "clip", bpf = "bandf", bp = "bandf", bpq = "bandq", dist = "distort", ph = "phaser",
+  phd = "phaserdepth", phasdp = "phaserdepth", phc = "phasercenter", phs = "phasersweep",
+  o = "orbit", duck = "duckorbit", duckatt = "duckattack", lpe = "lpenv", lpa = "lpattack",
+  lpd = "lpdecay", lps = "lpsustain", lpr = "lprelease",
 }
 M.RANGES = {
   lpf = { 50, 18000, log = true }, hpf = { 20, 8000, log = true }, lpq = { 0, 20 },
-  gain = { 0, 1.5 }, velocity = { 0, 1 }, room = { 0, 1 }, delay = { 0, 1 },
+  bandf = { 50, 12000, log = true }, bandq = { 0.1, 20 },
+  gain = { 0, 1.5 }, velocity = { 0, 1 }, postgain = { 0, 3 }, room = { 0, 1 }, delay = { 0, 1 },
   delaytime = { 0.02, 1 }, delayfb = { 0, 0.95 }, crush = { 1, 16, int = true }, pan = { 0, 1 },
+  coarse = { 1, 32, int = true }, shape = { 0, 0.95 }, distort = { 0, 8 },
+  phaser = { 0, 12 }, phaserdepth = { 0, 1 }, phasercenter = { 100, 6000, log = true },
+  phasersweep = { 0, 6000 },
   attack = { 0, 1 }, decay = { 0.01, 2 }, sustain = { 0, 1 }, release = { 0.01, 2 },
-  transpose = { -24, 24, int = true }, fast = { 1, 8, int = true }, slow = { 1, 8, int = true },
-  ply = { 1, 8, int = true }, degradeBy = { 0, 1 }, setcpm = { 10, 200 }, setcps = { 0.05, 2 },
+  transpose = { -24, 24, int = true }, speed = { -4, 4 }, clip = { 0.05, 4 },
+  fm = { 0, 16 }, fmh = { 0.25, 8 }, vib = { 0, 16 }, vibmod = { 0, 4 },
+  detune = { 0, 2 }, lpenv = { -8, 8 }, lpattack = { 0, 1 }, lpdecay = { 0, 1 }, lpsustain = { 0, 1 },
+  lprelease = { 0, 1 }, orbit = { 1, 8, int = true }, duckattack = { 0, 1 }, duckdepth = { 0, 1 },
+  fast = { 1, 8 }, slow = { 1, 8 }, hurry = { 1, 8 }, ply = { 1, 8, int = true },
+  iter = { 1, 8, int = true }, every = { 1, 16, int = true }, chunk = { 1, 16, int = true },
+  echo = { 1, 8, int = true }, degradeBy = { 0, 1 }, sometimesBy = { 0, 1 }, linger = { 0.05, 1 },
+  late = { 0, 1 }, early = { 0, 1 }, off = { 0, 1 }, add = { -24, 24, int = true },
+  segment = { 1, 32, int = true }, range = { 0, 8000 },
+  setcpm = { 10, 200 }, setcps = { 0.05, 2 },
 }
 
 function M.range_for(name)

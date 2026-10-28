@@ -7,6 +7,8 @@ syn keyword visBlend    add mult diff
 syn keyword visVar      t cycle sin cos abs pi
 syn match   visNumber   "\v(\w)@<!-?\d*\.?\d+"
 syn match   visOp       "[*+/-]"
+syn match   visPipe     "|"
+syn keyword visPort     vis screen
 syn match   visComment  "--.*$"
 
 hi def link visSource   Function
@@ -16,6 +18,8 @@ hi def link visBlend    Keyword
 hi def link visVar      Special
 hi def link visNumber   Number
 hi def link visOp       Operator
+hi def link visPipe     Operator
+hi def link visPort     Special
 hi def link visComment  Comment
 
 let b:current_syntax = "jynxvis"

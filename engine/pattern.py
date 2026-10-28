@@ -261,8 +261,8 @@ class Parser:
             if not self.peek():
                 raise PatternError("missing '>'", c0)
             self.next()
-            if isinstance(node, Stack):
-                raise PatternError("',' is not allowed inside < >", c0)
+            if isinstance(node, Stack):  # <a b, c d> = <a b> and <c d> at once
+                return Stack([Alt([child for child, _ in layer.steps]) for layer in node.layers])
             return Alt([child for child, _ in node.steps])
         raise PatternError(f"unexpected '{text}'", c0)
 

@@ -97,8 +97,12 @@ def drum(name: str) -> np.ndarray:
     raise KeyError(name)
 
 
-def _wave(kind: str, f: float, t: np.ndarray) -> np.ndarray:
-    ph = f * t
+def _wave(kind: str, f, t: np.ndarray, fm: float = 0.0, fmh: float = 1.0,
+          detune: float = 0.2) -> np.ndarray:
+    """f is a frequency, or an array of them (vibrato)."""
+    ph = np.cumsum(np.broadcast_to(f, t.shape)) / SR if np.ndim(f) else f * t
+    if fm > 0:  # Strudel's .fm(index).fmh(ratio): a sine modulating the phase
+        ph = ph + fm * np.sin(TAU * ph * fmh) / TAU
     if kind == "sine":
         return np.sin(TAU * ph)
     if kind == "sub":
@@ -108,8 +112,9 @@ def _wave(kind: str, f: float, t: np.ndarray) -> np.ndarray:
     if kind == "triangle":
         return 2 * np.abs(2 * (ph % 1) - 1) - 1
     if kind == "supersaw":
-        return sum(2 * ((ph * d + o) % 1) - 1 for d, o in
-                   ((1, 0), (1.006, 0.3), (0.994, 0.6), (1.012, 0.1), (0.988, 0.8))) * 0.3
+        # five saws spread over +-detune semitones (Strudel's .detune())
+        return sum(2 * ((ph * 2 ** (k * detune / 12) + o) % 1) - 1 for k, o in
+                   ((0, 0), (0.5, 0.3), (-0.5, 0.6), (1, 0.1), (-1, 0.8))) * 0.3
     if kind == "bell":
         return np.sin(TAU * ph + 2.5 * np.exp(-t * 5) * np.sin(TAU * ph * 3.5))
     if kind == "pluck":
@@ -117,11 +122,15 @@ def _wave(kind: str, f: float, t: np.ndarray) -> np.ndarray:
     return 2 * (ph % 1) - 1  # sawtooth
 
 
-def _note(midi, wave, dur, attack, decay, sustain, release) -> np.ndarray:
-    """dur = how long the key is held (seconds). ADSR envelope."""
+def _note(midi, wave, dur, attack, decay, sustain, release,
+          fm=0.0, fmh=1.0, vib=0.0, vibmod=0.5, detune=0.2) -> np.ndarray:
+    """dur = how long the key is held (seconds). ADSR envelope. vib = vibrato rate
+    (Hz), vibmod = its depth (semitones); fm / fmh = FM index / harmonic ratio."""
     f = 440.0 * 2 ** ((midi - 69) / 12)
     t = _t(dur + release)
-    y = _wave(wave, f, t)
+    if vib > 0:
+        f = f * 2 ** (vibmod * np.sin(TAU * vib * t) / 12)
+    y = _wave(wave, f, t, fm, fmh, detune)
     a, d = max(attack, 0.002), max(decay, 0.001)
     env = np.where(t < a, t / a, np.maximum(1 - (1 - sustain) * (t - a) / d, sustain))
     held = min(int(dur * SR), len(t))
@@ -137,3 +146,13 @@ note = lru_cache(maxsize=256)(_note)
 def held_note(midi, wave, attack, decay, sustain, release, hold=4.0):
     """A keyboard note: rendered long (uncached); the mixer cuts it on key-up."""
     return _note(midi, wave, hold, attack, decay, sustain, release)
+
+
+def resample(buf: np.ndarray, speed: float) -> np.ndarray:
+    """Play a buffer faster/slower (Strudel's .speed); negative plays it backwards."""
+    if speed == 1 or speed == 0:
+        return buf
+    if speed < 0:
+        buf = buf[::-1]
+    pos = np.arange(0, len(buf) - 1, abs(speed))
+    return np.interp(pos, np.arange(len(buf)), buf)

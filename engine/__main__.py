@@ -2,14 +2,17 @@
 
 Protocol (one JSON object per line):
   editor -> engine   {"type": "music"|"vis", "text": "..."}   {"type": "hush", "on": true}
-  keys   -> engine   {"type": "down", "track": "keys", "key": "a", "midi": 60, "vel": .8, "hold": null}
+  keys   -> engine   {"type": "down", "track": "keys", "key": "a", "n": 0, "octave": 4, "vel": .8, "hold": null}
                      {"type": "down", "track": "keys", "key": "1", "sound": "bd"}
                      {"type": "up", "track": "keys", "key": "a"}
   engine -> clients  {"type": "ok"|"error", "buffer": ..., "errors": [...]}
                      {"type": "tracks", "names": [...]}
                      {"type": "cycle", "n": 12}
                      {"type": "hits", "hits": [[line, col0, col1, seconds], ...]}
-                     {"type": "played", "key": "a", "midi": 60, "pos": 12.37}
+                     {"type": "played", "key": "a", "midi": 60, "n": "0", "pos": 12.37}
+  screen -> engine   {"type": "watch"}   (jynx screen: draws the visuals in its own terminal)
+  engine -> screens  {"type": "vis_code", "text": "..."}
+                     {"type": "frame", "levels": {...}, "t": 12.3, "cycle": 6.1}
 """
 from __future__ import annotations
 
@@ -31,17 +34,18 @@ PORT = int(os.environ.get("JYNX_PORT", "7400"))
 
 
 class Hub:
-    """Fan messages out to connected editors, each at its scheduled time."""
+    """Fan messages out to connected editors (or screens), each at its scheduled time."""
 
     def __init__(self):
         self.clients: list[socket.socket] = []
+        self.screens: list[socket.socket] = []
         self.queue: list = []
         self.seq = itertools.count()
         self.cv = threading.Condition()
 
-    def post(self, msg: dict, delay: float = 0.0):
+    def post(self, msg: dict, delay: float = 0.0, screens: bool = False):
         with self.cv:
-            heapq.heappush(self.queue, (time.monotonic() + delay, next(self.seq), msg))
+            heapq.heappush(self.queue, (time.monotonic() + delay, next(self.seq), msg, screens))
             self.cv.notify()
 
     def run(self):
@@ -50,16 +54,20 @@ class Hub:
                 while not self.queue or self.queue[0][0] > time.monotonic():
                     wait = self.queue[0][0] - time.monotonic() if self.queue else None
                     self.cv.wait(wait)
-                _, _, msg = heapq.heappop(self.queue)
-                clients = list(self.clients)
+                _, _, msg, screens = heapq.heappop(self.queue)
+                clients = list(self.screens if screens else self.clients)
             data = (json.dumps(msg) + "\n").encode()
             for c in clients:
                 try:
                     c.sendall(data)
                 except OSError:
-                    with self.cv:
-                        if c in self.clients:
-                            self.clients.remove(c)
+                    self.drop(c)
+
+    def drop(self, conn):
+        with self.cv:
+            for group in (self.clients, self.screens):
+                if conn in group:
+                    group.remove(conn)
 
 
 class App:
@@ -69,6 +77,7 @@ class App:
         self.renderer = vis.Renderer()
         self.errors = {"music": None, "vis": None}
         self.flash = {"music": 0.0, "vis": 0.0}
+        self.vis_text = ""
         self.t0 = time.monotonic()
 
     # ------------------------------------------------------------ messages
@@ -89,15 +98,23 @@ class App:
             except vis.VisErrorList as e:
                 return self.fail("vis", e.errors)
             self.renderer.ops = ops
+            self.vis_text = msg.get("text", "")
+            self.hub.post({"type": "vis_code", "text": self.vis_text}, screens=True)
             self.succeed("vis")
         elif kind == "hush":
             self.engine.hush(bool(msg.get("on")))
         elif kind == "down":
             track = str(msg.get("track") or "keys")
-            pos = self.engine.key_down(track, msg.get("key"), midi=msg.get("midi"),
+            midi, label = msg.get("midi"), None
+            if msg.get("n") is not None:  # a = 0, w = 1, ...: through the track's .scale()
+                midi, label = self.engine.key_note(self.engine.track_for(track), int(msg["n"]),
+                                                   int(msg.get("octave", 4)))
+                if midi is None:
+                    return
+            pos = self.engine.key_down(track, msg.get("key"), midi=midi,
                                        sound=msg.get("sound"), vel=float(msg.get("vel", 0.8)),
                                        hold=msg.get("hold"))
-            self.hub.post({"type": "played", "key": msg.get("key"), "midi": msg.get("midi"),
+            self.hub.post({"type": "played", "key": msg.get("key"), "midi": midi, "n": label,
                            "sound": msg.get("sound"), "pos": pos})
         elif kind == "up":
             self.engine.key_up(str(msg.get("track") or "keys"), msg.get("key"))
@@ -128,15 +145,21 @@ class App:
                     line, buf = buf.split(b"\n", 1)
                     if line.strip():
                         try:
-                            self.handle(json.loads(line))
+                            msg = json.loads(line)
+                            if msg.get("type") == "watch":
+                                with self.hub.cv:  # this client is a screen, not an editor
+                                    self.hub.clients.remove(conn)
+                                    self.hub.screens.append(conn)
+                                if self.renderer.ops is not None:
+                                    self.hub.post({"type": "vis_code", "text": self.vis_text}, screens=True)
+                                continue
+                            self.handle(msg)
                         except Exception as e:  # never let one bad message kill the engine
                             self.errors["music"] = f"engine: {e}"
         except OSError:
             pass
         finally:
-            with self.hub.cv:
-                if conn in self.hub.clients:
-                    self.hub.clients.remove(conn)
+            self.hub.drop(conn)
             conn.close()
 
     def bind(self):
@@ -178,6 +201,22 @@ class App:
             line2 = f"\x1b[2m{info}\x1b[0m"
         return [" " + line1, " " + line2]
 
+    def env(self) -> vis.Env:
+        env = vis.Env(vis.MATH)
+        env.update(self.engine.levels())
+        env["t"] = time.monotonic() - self.t0
+        env["cycle"] = self.engine.cycle_pos
+        return env
+
+    def frame_loop(self):
+        """Feed connected screens the numbers the visuals react to."""
+        while True:
+            if self.hub.screens:
+                env = self.env()
+                self.hub.post({"type": "frame", "levels": self.engine.levels(),
+                               "t": env["t"], "cycle": env["cycle"]}, screens=True)
+            time.sleep(1 / 30)
+
     def draw_loop(self):
         out = sys.stdout
         out.write("\x1b[?25l\x1b[2J")
@@ -186,17 +225,23 @@ class App:
         while True:
             start = time.monotonic()
             cols, rows = shutil.get_terminal_size((80, 24))
-            if (cols, rows) != last_size:
+            screens = len(self.hub.screens)
+            if (cols, rows, screens > 0) != last_size:
                 out.write("\x1b[2J")
                 self.renderer.prev = None
-                last_size = (cols, rows)
+                last_size = (cols, rows, screens > 0)
+            if screens:  # the visuals are on their own screen: just show the status here
+                note = f"\x1b[2mvisuals are showing on {screens} jynx screen{'s' * (screens > 1)}\x1b[0m"
+                out.write("\x1b[H\n " + note + "\n\n" +
+                          "\n".join("\x1b[2K" + s for s in self.status_lines(cols)))
+                out.flush()
+                time.sleep(max(frame_time - (time.monotonic() - start), 0.001))
+                continue
             img_rows = max(rows - 2, 1)
-            env = vis.Env(vis.MATH)
-            env.update(self.engine.levels())
-            env["t"] = start - self.t0
-            env["cycle"] = self.engine.cycle_pos
-            img = self.renderer.render(cols, img_rows * 2, env)
+            img = self.renderer.render(cols, img_rows * 2, self.env())
             rows_txt = vis.to_ansi(img)
+            if self.renderer.hint:
+                rows_txt = vis.blank(cols, img_rows, self.renderer.hint)
             status = self.status_lines(cols)
             out.write("\x1b[H" + "\n".join(rows_txt) + "\n" +
                       "\n".join("\x1b[2K" + s for s in status))
@@ -247,6 +292,7 @@ def main():
         return
     threading.Thread(target=app.serve, args=(srv,), daemon=True).start()
     threading.Thread(target=app.hub.run, daemon=True).start()
+    threading.Thread(target=app.frame_loop, daemon=True).start()
     if os.environ.get("JYNX_NO_AUDIO"):
         stream = SilentClock(app.engine.callback)
     else:

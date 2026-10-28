@@ -6,6 +6,7 @@
     rotate 0 .1
     color 1 .4 .9          -- color ops apply top to bottom
     feedback .85
+    vis | screen           -- nothing is drawn until the visuals are piped to the screen
 
 Any argument can be an expression. Track names are live audio levels (0..1),
 plus `t` (seconds) and `cycle`. So `kaleid 3+bass*6` reacts to the bass.
@@ -77,6 +78,13 @@ def parse(text: str) -> list[Op]:
         line = raw.split("--", 1)[0].strip()
         if not line:
             continue
+        if "|" in line:
+            col = len(raw) - len(raw.lstrip())
+            if line.replace(" ", "").replace("\t", "") == "vis|screen":
+                ops.append(Op("screen", None, []))
+            else:
+                errors.append(VisError("the visuals pipe is `vis | screen`", idx + 1, col))
+            continue
         words = line.split()
         blend = None
         if words[0] in BLENDS:
@@ -133,11 +141,25 @@ def _gray(v):
 
 class Renderer:
     def __init__(self):
-        self.ops = parse("osc 10 .1 .8\nkaleid 4\nrotate 0 .1\nfeedback .7")
+        self.ops: list[Op] | None = None  # None until visuals code arrives: a dark screen
         self.prev = None
+
+    @property
+    def piped(self) -> bool:
+        return any(op.name == "screen" for op in self.ops or [])
+
+    @property
+    def hint(self) -> str:
+        """Why the screen is dark, if it is."""
+        if self.ops is None:
+            return "no visuals yet: write them in the .vis file and evaluate"
+        return "" if self.piped else "visuals aren't piped to the screen:  vis | screen"
 
     def render(self, w: int, h: int, env: Env) -> np.ndarray:
         """Returns float image (h, w, 3) in 0..1. h is in pixels (2 per text row)."""
+        if not self.piped:
+            self.prev = None
+            return np.zeros((h, w, 3))
         def val(op):
             out = []
             for c in op.args:
@@ -275,3 +297,11 @@ def to_ansi(img: np.ndarray) -> list[str]:
             for a, b in zip(top, bot)
         ) + "\x1b[0m")
     return rows
+
+
+def blank(cols: int, rows: int, text: str) -> list[str]:
+    """An empty screen with one dim line of text in the middle."""
+    out = ["\x1b[0m" + " " * cols] * rows
+    pad = max((cols - len(text)) // 2, 0)
+    out[rows // 2] = "\x1b[0m" + " " * pad + f"\x1b[2m{text}\x1b[0m" + " " * max(cols - pad - len(text), 0)
+    return out

@@ -17,43 +17,86 @@ Code is parsed here (in Python), never executed as JavaScript.
 """
 from __future__ import annotations
 
-import random
+import difflib
+import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
+from . import pat as P
 from . import pattern, synth
 
 HEADS = {"s": "s", "sound": "s", "note": "note", "n": "n"}
 
 # canonical name -> (default, min, max)
 NUM_PARAMS = {
+    # per note
     "gain": (1.0, 0.0, 2.0),
     "velocity": (1.0, 0.0, 1.0),
-    "lpf": (20000.0, 20.0, 20000.0),
-    "hpf": (0.0, 0.0, 10000.0),
-    "lpq": (1.0, 0.0, 30.0),
-    "room": (0.0, 0.0, 1.0),
-    "delay": (0.0, 0.0, 1.0),
-    "delaytime": (0.25, 0.01, 2.0),
-    "delayfb": (0.5, 0.0, 0.95),
-    "crush": (0.0, 0.0, 16.0),
-    "pan": (0.5, 0.0, 1.0),
     "attack": (0.005, 0.0, 4.0),
     "decay": (0.1, 0.001, 4.0),
     "sustain": (1.0, 0.0, 1.0),
     "release": (0.1, 0.005, 6.0),
     "transpose": (0.0, -48.0, 48.0),
+    "speed": (1.0, -8.0, 8.0),
+    "clip": (1.0, 0.01, 8.0),
+    "fm": (0.0, 0.0, 32.0),
+    "fmh": (1.0, 0.0, 16.0),
+    "vib": (0.0, 0.0, 30.0),
+    "vibmod": (0.5, 0.0, 12.0),
+    "cut": (0.0, 0.0, 64.0),
+    "detune": (0.2, 0.0, 12.0),
+    # filter envelope (Strudel's lpenv): the cutoff jumps up lpenv octaves and falls back
+    "lpenv": (0.0, -10.0, 10.0),
+    "lpattack": (0.005, 0.0, 4.0),
+    "lpdecay": (0.14, 0.0, 4.0),
+    "lpsustain": (0.0, 0.0, 1.0),
+    "lprelease": (0.1, 0.0, 4.0),
+    "orbit": (1.0, 0.0, 16.0),
+    # whole track (so knobs act on notes that are still ringing)
+    "lpf": (20000.0, 20.0, 20000.0),
+    "hpf": (0.0, 0.0, 10000.0),
+    "lpq": (1.0, 0.0, 30.0),
+    "bandf": (0.0, 0.0, 20000.0),
+    "bandq": (1.0, 0.1, 30.0),
+    "crush": (0.0, 0.0, 16.0),
+    "coarse": (1.0, 1.0, 64.0),
+    "shape": (0.0, 0.0, 0.99),
+    "distort": (0.0, 0.0, 10.0),
+    "phaser": (0.0, 0.0, 20.0),
+    "phaserdepth": (0.75, 0.0, 1.0),
+    "phasercenter": (1000.0, 50.0, 10000.0),
+    "phasersweep": (2000.0, 0.0, 10000.0),
+    "room": (0.0, 0.0, 1.0),
+    "delay": (0.0, 0.0, 1.0),
+    "delaytime": (0.25, 0.01, 2.0),
+    "delayfb": (0.5, 0.0, 0.95),
+    "pan": (0.5, 0.0, 1.0),
+    "postgain": (1.0, 0.0, 4.0),
 }
+STR_PARAMS = ("s", "vowel", "note", "n")
+# sidechain: .duck("4:5:6") ducks those orbits each time this pattern plays;
+# lists like "2:1" go one per orbit
+DUCK_PARAMS = ("duckorbit", "duckattack", "duckdepth")
 ALIASES = {
     "cutoff": "lpf", "lp": "lpf", "ctf": "lpf", "hcutoff": "hpf", "hp": "hpf",
     "resonance": "lpq", "delayfeedback": "delayfb", "dfb": "delayfb", "dt": "delaytime",
-    "sound": "s", "att": "attack", "dec": "decay", "sus": "sustain", "rel": "release",
-    "trans": "transpose", "vel": "velocity",
+    "delayt": "delaytime", "sound": "s", "att": "attack", "dec": "decay", "sus": "sustain",
+    "rel": "release", "trans": "transpose", "vel": "velocity", "legato": "clip",
+    "bpf": "bandf", "bp": "bandf", "bpq": "bandq", "dist": "distort", "ph": "phaser",
+    "phd": "phaserdepth", "phasdp": "phaserdepth", "phc": "phasercenter", "phs": "phasersweep",
+    "firstOf": "every",
+    "o": "orbit", "duck": "duckorbit", "duckatt": "duckattack", "lpe": "lpenv",
+    "lpa": "lpattack", "lpd": "lpdecay", "lps": "lpsustain", "lpr": "lprelease",
 }
-# applied to the whole track (so knobs act on ringing notes); the rest are per note
-TRACK_LEVEL = ("lpf", "hpf", "lpq", "crush", "room", "delay", "delaytime", "delayfb", "pan")
-INT_TRANSFORMS = {"fast": 16, "slow": 16, "ply": 8}
-OTHER_METHODS = ("s", "scale", "bank", "rev", "degrade", "degradeBy")
+TRACK_LEVEL = ("lpf", "hpf", "lpq", "bandf", "bandq", "crush", "coarse", "shape", "distort",
+               "phaser", "phaserdepth", "phasercenter", "phasersweep", "vowel",
+               "room", "delay", "delaytime", "delayfb", "pan", "postgain")
+VOWELS = {"a", "e", "i", "o", "u"}
+# accepted so Strudel code runs; they only change how strudel.cc draws or routes things
+NO_OPS = ("bank", "color", "colour", "analyze", "pianoroll", "punchcard", "scope",
+          "spiral", "markcss", "_pianoroll", "_punchcard", "_scope", "_spiral")
+# pattern functions that make sense with no arguments: .jux(rev), .every(2, palindrome)
+BARE_FNS = ("rev", "palindrome", "brak", "degrade", "arpeggiate", "press")
 
 SCALES = {
     "major": [0, 2, 4, 5, 7, 9, 11], "ionian": [0, 2, 4, 5, 7, 9, 11],
@@ -64,7 +107,47 @@ SCALES = {
     "major pentatonic": [0, 2, 4, 7, 9], "minor pentatonic": [0, 3, 5, 7, 10],
     "blues": [0, 3, 5, 6, 7, 10], "chromatic": list(range(12)),
     "whole tone": [0, 2, 4, 6, 8, 10],
+    "melodic minor": [0, 2, 3, 5, 7, 9, 11], "harmonic major": [0, 2, 4, 5, 7, 8, 11],
+    "phrygian dominant": [0, 1, 4, 5, 7, 8, 10], "lydian dominant": [0, 2, 4, 6, 7, 9, 10],
+    "altered": [0, 1, 3, 4, 6, 8, 10], "super locrian": [0, 1, 3, 4, 6, 8, 10],
+    "dorian b2": [0, 1, 3, 5, 7, 9, 10], "lydian augmented": [0, 2, 4, 6, 8, 9, 11],
+    "locrian #2": [0, 2, 3, 5, 6, 8, 10], "mixolydian b6": [0, 2, 4, 5, 7, 8, 10],
+    "locrian major": [0, 2, 4, 5, 6, 8, 10], "ultralocrian": [0, 1, 3, 4, 6, 8, 9],
+    "leading whole tone": [0, 2, 4, 6, 8, 10, 11],
+    "double harmonic major": [0, 1, 4, 5, 7, 8, 11], "double harmonic": [0, 1, 4, 5, 7, 8, 11],
+    "byzantine": [0, 1, 4, 5, 7, 8, 11], "hungarian minor": [0, 2, 3, 6, 7, 8, 11],
+    "hungarian major": [0, 3, 4, 6, 7, 9, 10], "neapolitan major": [0, 1, 3, 5, 7, 9, 11],
+    "neopolitan major": [0, 1, 3, 5, 7, 9, 11], "neapolitan minor": [0, 1, 3, 5, 7, 8, 11],
+    "neopolitan minor": [0, 1, 3, 5, 7, 8, 11], "persian": [0, 1, 4, 5, 6, 8, 11],
+    "enigmatic": [0, 1, 4, 6, 8, 10, 11], "oriental": [0, 1, 4, 5, 6, 9, 10],
+    "major blues": [0, 2, 3, 4, 7, 9], "minor blues": [0, 3, 5, 6, 7, 10],
+    "bebop": [0, 2, 4, 5, 7, 9, 10, 11], "bebop major": [0, 2, 4, 5, 7, 8, 9, 11],
+    "bebop minor": [0, 2, 3, 4, 5, 7, 9, 10], "diminished": [0, 2, 3, 5, 6, 8, 9, 11],
+    "half-whole diminished": [0, 1, 3, 4, 6, 7, 9, 10], "augmented": [0, 3, 4, 7, 8, 11],
+    "prometheus": [0, 2, 4, 6, 9, 10], "minor hexatonic": [0, 2, 3, 5, 7, 11],
+    "pentatonic": [0, 2, 4, 7, 9], "ionian pentatonic": [0, 4, 5, 7, 11],
+    "mixolydian pentatonic": [0, 4, 5, 7, 10], "lydian pentatonic": [0, 4, 6, 7, 11],
+    "locrian pentatonic": [0, 3, 5, 6, 10], "minor six pentatonic": [0, 3, 5, 7, 9],
+    "scriabin": [0, 1, 4, 7, 9], "hirajoshi": [0, 2, 3, 7, 8], "in-sen": [0, 1, 5, 7, 10],
+    "iwato": [0, 1, 5, 6, 10], "kumoijoshi": [0, 1, 5, 7, 8], "pelog": [0, 1, 3, 7, 8],
+    "egyptian": [0, 2, 5, 7, 10], "ritusen": [0, 2, 5, 7, 9],
 }
+
+
+def scale_of(text: str):
+    """"Ab:minor:pentatonic" / "C4 major" -> (root midi, steps), or an error message."""
+    parts = [p for p in re.split(r"[:\s]+", text.strip()) if p]
+    if not parts:
+        return "empty scale name"
+    root = synth.note_to_midi(parts[0].lower())
+    if root is None or not re.match(r"^[a-gA-G]", parts[0]):
+        return f"'{parts[0]}' is not a root note (try C, Eb3, F#4)"
+    mode = " ".join(parts[1:]).lower() or "major"
+    if mode not in SCALES:
+        close = difflib.get_close_matches(mode, SCALES, n=2, cutoff=0.6)
+        hint = f" — did you mean {' or '.join(close)}?" if close else " (the README lists the scales)"
+        return f"unknown scale '{mode}'{hint}"
+    return root, SCALES[mode]
 
 
 class LangError(Exception):
@@ -85,12 +168,9 @@ class ErrorList(Exception):
 
 @dataclass
 class Param:
-    const: object = None  # float or str
-    node: object = None  # a mini-notation pattern, when the argument is a string
-
-    @property
-    def patterned(self):
-        return self.node is not None
+    """A track-wide setting from the main chain: a number/name, or a signal (sine...)."""
+    const: object = None
+    sig: object = None
 
 
 @dataclass
@@ -98,70 +178,66 @@ class Track:
     name: str
     line: int
     head: str = "s"  # s | note | n
-    node: object = None
-    params: dict = field(default_factory=dict)
-    fast: int = 1
-    slow: int = 1
-    ply: int = 1
-    rev: bool = False
-    degrade: float = 0.0
+    pat: object = P.SILENCE
+    params: dict = field(default_factory=dict)  # live: applied the moment code is evaluated
     scale: tuple | None = None  # (root midi, intervals)
-    _pcache: dict = field(default_factory=dict, repr=False)
 
     def query(self, cycle: int):
-        evs = pattern.query(self.node, cycle, self.fast, self.slow, self.rev)
-        if self.ply > 1:
-            evs = [pattern.Event(e.start + i * e.dur / self.ply, e.dur / self.ply, e.value, e.span)
-                   for e in evs for i in range(self.ply)]
-        if self.degrade > 0:
-            evs = [e for e in evs
-                   if random.Random(f"{cycle}:{e.start:.6f}:{self.name}").random() >= self.degrade]
-        return evs
-
-    def patterned(self, key):
-        p = self.params.get(key)
-        return p is not None and p.patterned
+        """Events starting in this cycle; start is relative to the cycle (0..1)."""
+        haps = self.pat.q(cycle, cycle + 1)
+        haps.sort(key=lambda h: h.start)
+        return [replace(h, start=h.start - cycle) for h in haps]
 
     def const(self, key):
         p = self.params.get(key)
-        if p is None or p.patterned:
+        if p is None or p.const is None:
             return NUM_PARAMS[key][0] if key in NUM_PARAMS else None
         return p.const
 
-    def at(self, key, cycle: int, t: float):
-        """Value of a parameter for an event at cycle position t -> (value, span or None)."""
+    def value(self, key, cycle_pos: float):
+        """A track setting right now (signals move with the clock)."""
         p = self.params.get(key)
-        if p is None:
-            return (NUM_PARAMS[key][0] if key in NUM_PARAMS else None), None
-        if not p.patterned:
-            return p.const, None
-        ck = (key, cycle)
-        evs = self._pcache.get(ck)
-        if evs is None:
-            if len(self._pcache) > 64:
-                self._pcache.clear()
-            evs = self._pcache[ck] = pattern.query(p.node, cycle, self.fast, self.slow, self.rev)
-        hit = None
-        for e in evs:
-            if e.start <= t + 1e-9:
-                hit = e
-        hit = hit or (evs[0] if evs else None)
-        if hit is None:
-            return (NUM_PARAMS[key][0] if key in NUM_PARAMS else None), None
-        if key in NUM_PARAMS:
-            _, lo, hi = NUM_PARAMS[key]
-            return min(max(float(hit.value), lo), hi), hit.span
-        return hit.value, hit.span
+        if p is not None and p.sig is not None:
+            return clamp(key, p.sig(cycle_pos))
+        return self.const(key)
 
-    def midi(self, value: str) -> float | None:
-        if self.head == "n":
-            deg = int(float(value))
-            if self.scale is None:
+    def midi(self, value, add: float = 0.0, head: str | None = None,
+             scale: tuple | None = None) -> float | None:
+        scale = scale or self.scale
+        head = head or self.head
+        if head == "note" and scale and _is_number(value):
+            head = "n"  # note(run(8)).scale(...): numbers are scale steps, like Strudel
+        if head == "n":
+            try:
+                deg = round(float(value) + add)
+            except (TypeError, ValueError):
+                return None
+            if scale is None:
                 return 48 + deg
-            root, steps = self.scale
+            root, steps = scale
             octave, idx = divmod(deg, len(steps))
             return root + 12 * octave + steps[idx]
-        return synth.note_to_midi(value)
+        m = synth.note_to_midi(str(value)) if not isinstance(value, (int, float)) else float(value)
+        return None if m is None else m + add
+
+
+def _is_number(v) -> bool:
+    try:
+        float(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def clamp(key, v):
+    if key in NUM_PARAMS:
+        try:
+            v = float(str(v).split(":")[0])
+        except ValueError:
+            return NUM_PARAMS[key][0]
+        _, lo, hi = NUM_PARAMS[key]
+        return min(max(v, lo), hi)
+    return v
 
 
 DEFAULT_TRACK = Track(name="", line=0, head="note")
@@ -174,6 +250,24 @@ class Program:
     silent: bool = False
 
 
+@dataclass
+class Fn:
+    """A function argument: x => x.add(12).gain(.5), or rev, or fast(2)."""
+    calls: list  # [(tok, name, args), ...]
+
+
+@dataclass
+class PatArg:
+    """A pattern made by a function, like run(8)."""
+    pat: object
+
+
+@dataclass
+class SigArg:
+    sig: P.Sig
+    seg: float | None = None  # .segment(n) turns it into a pattern
+
+
 # ---------------------------------------------------------------- tokenizer
 
 TOKEN_RE = re.compile(r"""
@@ -181,7 +275,7 @@ TOKEN_RE = re.compile(r"""
     (?P<num>\d+\.\d*|\.\d+|\d+) |
     (?P<id>[A-Za-z_$][A-Za-z0-9_$]*) |
     (?P<str>"[^"\n]*"|'[^'\n]*'|`[^`\n]*`) |
-    (?P<op>[().,:+\-*/])
+    (?P<op>=>|[().,:+\-*/=])
 """, re.X)
 
 
@@ -226,6 +320,7 @@ class Parser:
         self.prog = Program()
         self.errors: list[LangError] = []
         self.anon = 0
+        self.vars: dict = {}  # let name = value
 
     # -- token helpers
     def peek(self, k=0):
@@ -276,6 +371,15 @@ class Parser:
             # chain lines whose head was commented out: ignore the whole block quietly
             self.skip_statement(self.i + 1)
             return
+        if t.kind == "id" and t.text in ("let", "const", "var"):
+            # let lpf = slider(7420, 0, 10000)   let bank = "tr909"   let wob = sine.range(1, 4)
+            self.next()
+            name = self.next()
+            if name is None or name.kind != "id":
+                raise LangError(f"expected a name after {t.text}", t.line, t.col)
+            self.expect("=", f"after {t.text} {name.text}")
+            self.vars[name.text] = self.arg()
+            return
         if t.kind == "id" and self.at_op(":", 1):
             self.next()
             self.next()
@@ -310,11 +414,20 @@ class Parser:
             raise LangError("a pattern starts with s(\"...\"), note(\"...\") or n(\"...\")",
                             where.line, where.col)
         self.expect("(", f"after {head.text}")
-        src = self.next()
-        if src is None or src.kind != "str":
-            where = src or head
-            raise LangError(f"{head.text}() needs a pattern string, like {head.text}(\"...\")",
-                            where.line, where.col)
+        src = self.arg()
+        kind = HEADS[head.text]
+        if isinstance(src, Tok):
+            node = self.mini(src)
+            self.check_values(kind, node, src)
+            pat = P.from_node(node)
+        elif isinstance(src, SigArg) and src.seg and kind != "s":
+            pat = P.segment_sig(src.sig, src.seg)
+        elif isinstance(src, PatArg) and kind != "s":
+            pat = src.pat
+        else:
+            raise LangError(f"{head.text}() needs a pattern string, like {head.text}(\"...\")"
+                            + (" (or run(n), or a signal with .segment(n))" if kind != "s" else ""),
+                            head.line, head.col)
         self.expect(")", f"to close {head.text}(")
 
         muted = label.startswith("_")
@@ -323,13 +436,13 @@ class Parser:
             name = f"p{self.anon}"
         else:
             name = label.lstrip("_")
-        track = Track(name=name, line=head.line, head=HEADS[head.text],
-                      node=self.mini(src), params={})
-        self.check_values(track.head, track.node, src)
+        track = Track(name=name, line=head.line, head=kind, pat=pat, params={})
+        self.seeds = 0
 
         while self.at_op("."):
             self.next()
-            self.method(track)
+            tok, mname, args = self.call()
+            track.pat = self.apply(track, track.pat, tok, mname, args, lam=False)
 
         if not muted:
             if name in self.prog.tracks:
@@ -352,18 +465,20 @@ class Parser:
                     f"synths: {' '.join(sorted(synth.WAVES))})", line, col)
             if kind == "note" and synth.note_to_midi(v) is None:
                 raise LangError(f"'{v}' is not a note (try c3, eb4, f#2 or a midi number)", line, col)
+            if kind == "vowel" and v.lower() not in VOWELS:
+                raise LangError(f"'{v}' is not a vowel (a e i o u)", line, col)
             if kind in ("n", "num"):
                 try:
-                    float(v)
+                    float(v.split(":")[0])
                 except ValueError:
                     raise LangError(f"'{v}' is not a number", line, col)
 
-    def method(self, track: Track):
+    # -- method calls
+    def call(self):
         t = self.next()
         if t is None or t.kind != "id":
             where = t or self.toks[-1]
             raise LangError("expected a method name after '.'", where.line, where.col)
-        name = ALIASES.get(t.text, t.text)
         args = []
         if self.at_op("("):
             self.next()
@@ -373,84 +488,406 @@ class Parser:
                     self.next()
                     args.append(self.arg())
             self.expect(")", f"to close .{t.text}(")
+        return t, ALIASES.get(t.text, t.text), args
 
-        def need(n):
-            if len(args) != n:
-                raise LangError(f".{t.text}() takes {n} argument{'s' if n != 1 else ''}", t.line, t.col)
+    def apply(self, track: Track, pat, t: Tok, name: str, args: list, lam: bool):
+        """One .method(...) -> the new pattern. In the main chain (lam=False) plain
+        numbers become live track settings; inside a function (x => x...) they only
+        touch the events that function produces."""
 
-        if name in NUM_PARAMS:
-            need(1)
-            a = args[0]
+        def bad(msg):
+            return LangError(msg, t.line, t.col)
+
+        def need(lo, hi=None):
+            hi = lo if hi is None else hi
+            if not lo <= len(args) <= hi:
+                want = f"{lo}" if lo == hi else f"{lo}-{hi}"
+                raise bad(f".{t.text}() takes {want} argument{'s' if hi != 1 else ''}")
+
+        def nums(idxs, make, vals=()):
+            """make(*numbers), where each argument may also be a "pattern", a signal or run()."""
+            if not idxs:
+                return make(*vals)
+            return P.patternify(numpat(idxs[0]), lambda v: nums(idxs[1:], make, vals + (v,)))
+
+        def numpat(i):
+            """A number, or a pattern of numbers ("<1 2>")."""
+            a = args[i]
+            if isinstance(a, float):
+                return a
             if isinstance(a, Tok):
                 node = self.mini(a)
                 self.check_values("num", node, a)
-                track.params[name] = Param(node=node)
-            else:
-                _, lo, hi = NUM_PARAMS[name]
-                track.params[name] = Param(const=min(max(a, lo), hi))
-        elif name == "s":
-            need(1)
-            a = args[0]
+                return P.from_node(node)
+            if isinstance(a, SigArg):
+                return P.segment_sig(a.sig, a.seg) if a.seg else a.sig
+            if isinstance(a, PatArg):
+                return a.pat
+            raise bad(f".{t.text}() takes a number, a \"pattern\" or a signal like sine here")
+
+        def strpat(i, kind="any"):
+            a = args[i]
             if not isinstance(a, Tok):
-                raise LangError('.s() takes a sound name in quotes, like .s("sawtooth")', t.line, t.col)
+                raise bad(f".{t.text}() takes a \"pattern\" in quotes here")
             node = self.mini(a)
-            self.check_values("s", node, a)
-            ws = list(pattern.words(node))
-            if isinstance(node, pattern.Seq) and len(node.steps) == 1 and len(ws) == 1 \
+            if kind != "any":
+                self.check_values(kind, node, a)
+            return P.from_node(node)
+
+        def fn(i):
+            a = args[i]
+            if isinstance(a, Fn):
+                return lambda p: self.run(track, p, a)
+            raise bad(f".{t.text}() needs a function here, like x => x.fast(2), or rev")
+
+        def seed():
+            self.seeds += 1
+            return f"{track.name}:{self.seeds}"
+
+        # ---- controls: sound, effects, envelopes
+        if name in DUCK_PARAMS:
+            need(1)
+            a = args[0]
+            if isinstance(a, float):
+                a = Tok("str", f"{a:g}", t.line, t.col, False)
+            if not isinstance(a, Tok):
+                raise bad(f'.{t.text}() takes numbers like "4:5:6"')
+            node = self.mini(a)
+            self.check_values("num", node, a)
+            words = list(pattern.words(node))
+            if not lam and isinstance(node, pattern.Seq) and len(node.steps) == 1 and len(words) == 1 \
                     and isinstance(node.steps[0][0], pattern.Word):
-                track.params["s"] = Param(const=ws[0].value)
-            else:
-                track.params["s"] = Param(node=node)
-        elif name == "scale":
+                track.params[name] = Param(const=words[0].value)
+                return pat
+            return P.set_param(pat, name, P.from_node(node))
+        if name in NUM_PARAMS or name in STR_PARAMS:
+            need(1)
+            a = args[0]
+            bus = lam and name in TRACK_LEVEL
+            if isinstance(a, Fn):
+                raise bad(f".{t.text}() takes a value, not a function")
+            if isinstance(a, Tok):
+                kind = {"s": "s", "vowel": "vowel", "note": "note", "n": "n"}.get(name, "num")
+                node = self.mini(a)
+                self.check_values(kind, node, a)
+                one = list(pattern.words(node))
+                single = (isinstance(node, pattern.Seq) and len(node.steps) == 1 and len(one) == 1
+                          and isinstance(node.steps[0][0], pattern.Word))
+                if single and name in ("s", "vowel") and not lam:
+                    track.params[name] = Param(const=one[0].value)
+                    return pat
+                if single and name in ("s", "vowel"):
+                    return P.set_param(pat, name, one[0].value, bus)
+                return P.set_param(pat, name, P.from_node(node), bus)
+            if name in STR_PARAMS and name not in ("note", "n"):
+                raise bad(f'.{t.text}() takes a name in quotes, like .{t.text}("...")')
+            if isinstance(a, PatArg):
+                return P.set_param(pat, name, a.pat, bus)
+            if isinstance(a, SigArg):
+                if a.seg:
+                    return P.set_param(pat, name, P.segment_sig(a.sig, a.seg), bus)
+                if not lam and name in TRACK_LEVEL:
+                    track.params[name] = Param(sig=a.sig)
+                    return pat
+                return P.set_param(pat, name, a.sig, bus)
+            v = clamp(name, a) if name in NUM_PARAMS else a
+            if not lam and name not in ("note", "n"):
+                track.params[name] = Param(const=v)
+                return pat
+            return P.set_param(pat, name, v, bus)
+        if name == "adsr":
+            need(1)
+            a = args[0]
+            parts = a.text.split(":") if isinstance(a, Tok) else []
+            try:
+                vals = [float(x) for x in parts]
+            except ValueError:
+                vals = []
+            if not 1 <= len(vals) <= 4:
+                raise bad('.adsr() takes "attack:decay:sustain:release", like .adsr(".01:.1:.5:.2")')
+            for key, v in zip(("attack", "decay", "sustain", "release"), vals):
+                if lam:
+                    pat = P.set_param(pat, key, clamp(key, v))
+                else:
+                    track.params[key] = Param(const=clamp(key, v))
+            return pat
+        if name == "scale":
             need(1)
             a = args[0]
             if not isinstance(a, Tok):
-                raise LangError('.scale() takes a name in quotes, like .scale("C4:minor")', t.line, t.col)
-            track.scale = self.scale(a)
-        elif name == "bank":
-            need(1)  # accepted for Strudel compatibility; jynx has one kit
-        elif name in INT_TRANSFORMS:
+                raise bad('.scale() takes a name in quotes, like .scale("C4:minor")')
+            fixed = scale_of(a.text)
+            if isinstance(fixed, tuple):
+                if not lam:
+                    track.scale = fixed
+                    return pat
+                return P.set_param(pat, "scale", fixed)
+            if not re.search(r"[<\[\]>*/!@?,]", a.text) and " " not in a.text.strip():
+                raise bad(fixed)
+            node = self.mini(a)  # a pattern of scales: "<C:major A:minor>"
+            for w in pattern.words(node):
+                sc = scale_of(w.value)
+                if not isinstance(sc, tuple):
+                    raise LangError(sc, w.span[0], w.span[1])
+            spat = P.fmap(P.from_node(node), lambda h: replace(h, value=scale_of(h.value)))
+            return P.set_param(pat, "scale", spat)
+        if name in NO_OPS:
+            return pat
+
+        # ---- time
+        if name in ("fast", "slow", "hurry"):
             need(1)
-            a = args[0]
-            if isinstance(a, Tok) or a != int(a) or not 1 <= a <= INT_TRANSFORMS[name]:
-                raise LangError(f".{name}() takes a whole number from 1 to {INT_TRANSFORMS[name]}",
-                                t.line, t.col)
-            setattr(track, name, int(a))
-        elif name == "rev":
+            f = {"fast": P.fast, "slow": P.slow, "hurry": P.hurry}[name]
+            return P.patternify(numpat(0), lambda v: f(pat, v))
+        if name in ("late", "early"):
+            need(1)
+            sign = 1 if name == "late" else -1
+            return P.patternify(numpat(0), lambda v: P.late(pat, sign * v))
+        if name == "rev":
             need(0)
-            track.rev = True
-        elif name in ("degrade", "degradeBy"):
-            if name == "degrade":
-                need(0)
-                track.degrade = 0.5
-            else:
+            return P.rev(pat)
+        if name == "ply":
+            need(1)
+            return P.patternify(numpat(0), lambda v: P.ply(pat, v))
+        if name in ("iter", "iterBack"):
+            need(1)
+            return P.patternify(numpat(0), lambda v: P.iter_(pat, v, back=name == "iterBack"))
+        if name == "palindrome":
+            need(0)
+            return P.palindrome(pat)
+        if name == "brak":
+            need(0)
+            return P.brak(pat)
+        if name == "linger":
+            need(1)
+            return P.patternify(numpat(0), lambda v: P.linger(pat, v))
+        if name == "zoom":
+            need(2)
+            return nums([0, 1], lambda s, e: P.zoom(pat, s, e))
+        if name in ("swingBy", "swing"):
+            if name == "swing":
                 need(1)
-                if isinstance(args[0], Tok):
-                    raise LangError(".degradeBy() takes a number from 0 to 1", t.line, t.col)
-                track.degrade = min(max(args[0], 0.0), 1.0)
-        else:
-            known = sorted({*NUM_PARAMS, *INT_TRANSFORMS, *OTHER_METHODS, *ALIASES})
-            raise LangError(f"unknown method .{t.text}() — jynx knows: {' '.join(known)}",
-                            t.line, t.col)
+                return P.patternify(numpat(0), lambda v: P.swing_by(pat, 1 / 3, v))
+            need(2)
+            return nums([0, 1], lambda x, n: P.swing_by(pat, x, n))
+        if name in ("press", "pressBy"):
+            need(0) if name == "press" else need(1)
+            if name == "press":
+                return P.press_by(pat, 0.5)
+            return nums([0], lambda r: P.press_by(pat, r))
+        if name in ("inside", "outside"):
+            need(2)
+            f = fn(1)
+            return nums([0], lambda n: P.inside(pat, n if name == "inside" else 1 / n if n else 1, f))
 
-    def scale(self, tok: Tok):
-        parts = [p for p in re.split(r"[:\s]+", tok.text.strip()) if p]
-        if not parts:
-            raise LangError("empty scale name", tok.line, tok.col)
-        root = synth.note_to_midi(parts[0].lower())
-        if root is None or not re.match(r"^[a-gA-G]", parts[0]):
-            raise LangError(f"'{parts[0]}' is not a root note (try C, Eb3, F#4)", tok.line, tok.col)
-        mode = " ".join(parts[1:]).lower() or "major"
-        if mode not in SCALES:
-            raise LangError(f"unknown scale '{mode}' (known: {', '.join(SCALES)})", tok.line, tok.col)
-        return root, SCALES[mode]
+        # ---- structure
+        if name == "struct":
+            need(1)
+            return P.struct(pat, strpat(0))
+        if name == "mask":
+            need(1)
+            return P.mask(pat, strpat(0))
+        if name in ("euclid", "euclidRot", "euclidLegato", "euclidLegatoRot"):
+            rot = name.endswith("Rot")
+            need(3) if rot else need(2)
+            legato = name.startswith("euclidLegato")
+            return nums([0, 1, 2] if rot else [0, 1],
+                        lambda k, n, r=0: P.euclid(pat, round(k), round(n), round(r), legato=legato))
+        if name == "segment":
+            need(1)
+            return P.patternify(numpat(0), lambda v: P.segment(pat, v))
+        if name == "arp":
+            need(1)
+            return P.arp(pat, strpat(0, "num"))
+        if name == "arpeggiate":
+            need(0)
+            return P.arpeggiate(pat)
 
-    # -- arguments: a string (pattern) or a number expression
+        # ---- randomness
+        if name in ("degrade", "degradeBy"):
+            need(0) if name == "degrade" else need(1)
+            s = seed()
+            return P.patternify(0.5 if name == "degrade" else numpat(0),
+                                lambda v: P.degrade_by(pat, v, s))
+        chances = {"sometimes": 0.5, "often": 0.75, "rarely": 0.25, "almostNever": 0.1,
+                   "almostAlways": 0.9, "always": 1.0, "never": 0.0}
+        if name in chances:
+            need(1)
+            return P.sometimes_by(pat, chances[name], fn(0), seed())
+        if name == "sometimesBy":
+            need(2)
+            f, s = fn(1), seed()
+            return P.patternify(numpat(0), lambda v: P.sometimes_by(pat, v, f, s))
+        if name in ("someCycles", "someCyclesBy"):
+            need(1) if name == "someCycles" else need(2)
+            f, s = fn(len(args) - 1), seed()
+            if name == "someCycles":
+                return P.some_cycles_by(pat, 0.5, f, s)
+            return nums([0], lambda p: P.some_cycles_by(pat, p, f, s))
+
+        # ---- layering
+        if name in ("every", "lastOf"):
+            need(2)
+            f = fn(1)
+            return P.patternify(numpat(0), lambda v: P.every(pat, v, f, last=name == "lastOf"))
+        if name in ("chunk", "chunkBack"):
+            need(2)
+            f = fn(1)
+            return nums([0], lambda n: P.chunk(pat, round(n), lambda _: f(_), back=name == "chunkBack"))
+        if name == "off":
+            need(2)
+            f = fn(1)
+            return P.patternify(numpat(0), lambda v: P.off(pat, v, f))
+        if name == "superimpose":
+            need(1)
+            return P.stack(pat, fn(0)(pat))
+        if name == "layer":
+            if not args:
+                raise bad(".layer() takes one or more functions")
+            return P.stack(*[fn(i)(pat) for i in range(len(args))])
+        if name in ("jux", "juxBy"):
+            if name == "jux":
+                need(1)
+                return P.jux_by(pat, 1.0, fn(0))
+            need(2)
+            f = fn(1)
+            return nums([0], lambda by: P.jux_by(pat, by, f))
+        if name == "echo":
+            need(3)
+            return nums([0, 1, 2], lambda n, t_, fb: P.echo(pat, round(n), t_, fb))
+        if name == "stut":
+            need(3)
+            return nums([0, 1, 2], lambda n, fb, t_: P.echo(pat, round(n), t_, fb))
+        if name == "echoWith":
+            need(3)
+            f = fn(2)
+            return nums([0, 1], lambda n, t_: P.echo_with(pat, round(n), t_, f))
+        if name in ("add", "sub"):
+            need(1)
+            return P.add(pat, numpat(0), 1.0 if name == "add" else -1.0)
+
+        known = sorted({*NUM_PARAMS, *STR_PARAMS, *DUCK_PARAMS, *ALIASES, *METHODS, *NO_OPS})
+        close = difflib.get_close_matches(t.text, known, n=3, cutoff=0.6)
+        hint = f" — did you mean {' or '.join('.' + c + '()' for c in close)}?" if close else \
+            " (the README lists everything jynx knows)"
+        raise bad(f"unknown method .{t.text}(){hint}")
+
+    def run(self, track: Track, pat, f: Fn):
+        for tok, name, args in f.calls:
+            pat = self.apply(track, pat, tok, name, args, lam=True)
+        return pat
+
+    # -- arguments: a "pattern", a number expression, a function or a signal
     def arg(self):
         t = self.peek()
-        if t is not None and t.kind == "str":
+        if t is None:
+            raise LangError("expected an argument", self.end_line(), 0)
+        if t.kind == "str":
             return self.next()
+        if t.kind == "id" and t.text in self.vars and not self.at_op("(", 1) \
+                and not self.at_op("=>", 1) and not self.at_op(".", 1):
+            v = self.vars[t.text]
+            if isinstance(v, float):
+                return self.expr()  # so lpf * 2 works too
+            self.next()
+            return v
+        if t.kind == "id" and self.at_op("=>", 1):
+            return self.lambda_()
+        if self.at_op("(") and self.peek(1) and self.peek(1).kind == "id" \
+                and self.at_op(")", 2) and self.at_op("=>", 3):
+            self.next()
+            return self.lambda_(closing=True)
+        if t.kind == "id" and (t.text in P.SIGNALS or t.text == "irand"):
+            return self.signal()
+        if t.kind == "id" and t.text == "run" and self.at_op("(", 1):
+            return self.run_arg()
+        if t.kind == "id" and t.text != "slider":
+            # curried: .every(4, fast(2)) or bare: .jux(rev)
+            name = ALIASES.get(t.text, t.text)
+            if self.at_op("(", 1):
+                tok, name, args = self.call()
+                return Fn([(tok, name, args)])
+            if name in BARE_FNS:
+                self.next()
+                return Fn([(t, name, [])])
+            raise LangError(f"'{t.text}' can't be used here (functions look like x => x.fast(2))",
+                            t.line, t.col)
         return self.expr()
+
+    def run_arg(self):
+        """run(8) = "0 1 2 3 4 5 6 7"; the count can be a pattern or a signal too."""
+        t = self.next()
+        self.expect("(", "after run")
+        a = self.arg()
+        self.expect(")", "to close run(")
+        if isinstance(a, float):
+            return PatArg(P.run(a))
+        if isinstance(a, Tok):
+            node = self.mini(a)
+            self.check_values("num", node, a)
+            return PatArg(P.patternify(P.from_node(node), P.run))
+        if isinstance(a, SigArg):
+            return PatArg(P.patternify(P.segment_sig(a.sig, a.seg) if a.seg else a.sig, P.run))
+        raise LangError("run() takes a number, like run(8)", t.line, t.col)
+
+    def lambda_(self, closing=False):
+        param = self.next()
+        if closing:
+            self.next()  # )
+        self.next()  # =>
+        body = self.next()
+        if body is None or body.kind != "id" or body.text != param.text:
+            where = body or param
+            raise LangError(f"a function looks like {param.text} => {param.text}.fast(2)",
+                            where.line, where.col)
+        calls = []
+        while self.at_op("."):
+            self.next()
+            calls.append(self.call())
+        return Fn(calls)
+
+    def signal(self):
+        t = self.next()
+        if t.text == "irand":
+            self.expect("(", "after irand")
+            n = max(int(self.expr()), 1)
+            self.expect(")", "to close irand(")
+            sig = P.Sig(lambda x, n=n: math.floor(P.rand(x, "irand") * n))
+        else:
+            sig = P.Sig(P.SIGNALS[t.text])
+        out = SigArg(sig)
+        while self.at_op("."):
+            self.next()
+            m = self.next()
+            if m is None or m.kind != "id":
+                raise LangError("expected a method after the signal", t.line, t.col)
+            self.expect("(", f"after .{m.text}")
+            vals = [self.expr()]
+            while self.at_op(","):
+                self.next()
+                vals.append(self.expr())
+            self.expect(")", f"to close .{m.text}(")
+            f = out.sig.f
+            if m.text == "range" and len(vals) == 2:
+                lo, hi = vals
+                out.sig = P.Sig(lambda x, f=f, lo=lo, hi=hi: lo + f(x) * (hi - lo))
+            elif m.text == "rangex" and len(vals) == 2 and vals[0] > 0 and vals[1] > 0:
+                lo, hi = vals
+                out.sig = P.Sig(lambda x, f=f, lo=lo, hi=hi: lo * (hi / lo) ** f(x))
+            elif m.text in ("slow", "fast") and len(vals) == 1 and vals[0] > 0:
+                k = vals[0] if m.text == "fast" else 1 / vals[0]
+                out.sig = P.Sig(lambda x, f=f, k=k: f(x * k))
+            elif m.text in ("add", "sub", "mul", "div") and len(vals) == 1:
+                v = vals[0]
+                op = {"add": lambda a: a + v, "sub": lambda a: a - v, "mul": lambda a: a * v,
+                      "div": lambda a: a / v if v else a}[m.text]
+                out.sig = P.Sig(lambda x, f=f, op=op: op(f(x)))
+            elif m.text == "segment" and len(vals) == 1 and vals[0] >= 1:
+                out.seg = vals[0]
+            else:
+                raise LangError(f"signals know .range(lo, hi) .rangex .slow(n) .fast(n) .segment(n) "
+                                f".add .sub .mul .div — not .{m.text}({len(vals)} args)", m.line, m.col)
+        return out
 
     def expr(self):
         v = self.term()
@@ -476,6 +913,8 @@ class Parser:
             raise LangError("expected a number", self.end_line(), 0)
         if t.kind == "num":
             return float(t.text)
+        if t.kind == "id" and isinstance(self.vars.get(t.text), float):
+            return self.vars[t.text]
         if t.kind == "op" and t.text == "-":
             return -self.factor()
         if t.kind == "op" and t.text == "(":
@@ -493,6 +932,15 @@ class Parser:
             return vals[0]
         raise LangError(f"expected a number, a \"pattern\" or slider(...), got '{t.text}'",
                         t.line, t.col)
+
+
+METHODS = ("adsr", "scale", "fast", "slow", "hurry", "late", "early", "rev", "ply", "iter",
+           "iterBack", "palindrome", "brak", "linger", "zoom", "swing", "swingBy", "press",
+           "pressBy", "inside", "outside", "struct", "mask", "euclid", "euclidRot", "euclidLegato",
+           "euclidLegatoRot", "segment", "arp", "arpeggiate", "degrade", "degradeBy", "sometimes",
+           "often", "rarely", "almostNever", "almostAlways", "always", "never", "sometimesBy",
+           "someCycles", "someCyclesBy", "every", "lastOf", "chunk", "chunkBack", "off",
+           "superimpose", "layer", "jux", "juxBy", "echo", "stut", "echoWith", "add", "sub")
 
 
 def parse(text: str) -> Program:

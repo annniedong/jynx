@@ -143,7 +143,11 @@ local function connect(tries)
       if rerr or not chunk then
         S.connected, S.sock = false, nil
         pcall(sock.close, sock)
-        vim.schedule(function() vim.cmd("redrawstatus!") end)
+        vim.schedule(function()
+          vim.cmd("redrawstatus!")
+          -- the engine runs in another terminal: when it restarts, pick it back up
+          if vim.env.JYNX_ENGINE == "external" then vim.defer_fn(function() connect(math.huge) end, 1000) end
+        end)
         return
       end
       pending = pending .. chunk
@@ -323,14 +327,15 @@ M.connect = function(tries) connect(tries or 20) end
 
 function M.start()
   local music = api.nvim_get_current_buf()
-  if kind_of(music) ~= "music" then
-    return vim.notify("jynx: open a .jynx file first", vim.log.levels.ERROR)
+  local kind = kind_of(music)
+  if not kind then
+    return vim.notify("jynx: open a .jynx or .vis file first", vim.log.levels.ERROR)
   end
-  S.bufs.music = music
+  S.bufs[kind] = music
   local music_win = api.nvim_get_current_win()
 
   if vim.env.JYNX_ENGINE == "external" then
-    vim.notify("jynx: using the engine running in another terminal")
+    vim.notify("jynx: using the engine in another terminal (start it with ./jynx engine)")
   elseif not S.job then
     vim.cmd("botright vnew")
     local term_win = api.nvim_get_current_win()
@@ -349,15 +354,16 @@ function M.start()
     api.nvim_set_current_win(music_win)
   end
 
+  -- `jynx music` / `jynx vis` open one file per terminal: no split
   local name = api.nvim_buf_get_name(music)
   local visfile = name:gsub("%.jynx$", ".vis")
-  if visfile ~= name and not win_of(vim.fn.bufnr(visfile)) then
+  if kind == "music" and not vim.env.JYNX_ONLY and visfile ~= name and not win_of(vim.fn.bufnr(visfile)) then
     vim.cmd("belowright split " .. vim.fn.fnameescape(visfile))
     api.nvim_win_set_height(0, math.max(math.floor(vim.o.lines * 0.3), 8))
     S.bufs.vis = api.nvim_get_current_buf()
     api.nvim_set_current_win(music_win)
   end
-  connect(60)
+  connect(vim.env.JYNX_ENGINE == "external" and math.huge or 60)
 end
 
 ---------------------------------------------------------------------- statusline
@@ -380,7 +386,7 @@ function M.statusline()
     else
       local m = api.nvim_get_mode().mode
       if m:sub(1, 1) == "i" then
-        parts[#parts + 1] = "%#JynxDirty# INSERT · silent until <Esc> %*"
+        parts[#parts + 1] = "%#JynxDirty# INSERT · silent until <CR> %*"
       elseif m:match("^[vV\22]") then
         parts[#parts + 1] = "%#JynxDim# VISUAL %*"
       end
@@ -392,7 +398,7 @@ function M.statusline()
   elseif (S.errors[kind] or 0) > 0 then
     parts[#parts + 1] = "%#JynxOff# ✗ error — old code still playing %*"
   elseif S.dirty[buf] then
-    parts[#parts + 1] = "%#JynxDirty# ◐ rehearsing %*"
+    parts[#parts + 1] = "%#JynxDirty# ◐ rehearsing · <CR> to play %*"
   else
     parts[#parts + 1] = "%#JynxLive# ● live %*"
   end
@@ -450,16 +456,6 @@ function M.buffer_maps(buf)
   map({ "n", "x", "o" }, "[s", function() edit.jump_step(-1) end, o("previous step"))
 end
 
-local timers = {}
-local function eval_soon(buf)
-  local t = timers[buf]
-  if not t then t = uv.new_timer(); timers[buf] = t end
-  t:stop()
-  t:start(40, 0, vim.schedule_wrap(function()
-    if api.nvim_buf_is_valid(buf) then M.eval(buf, { quiet = true }) end
-  end))
-end
-
 local function attach(buf)
   local kind = kind_of(buf)
   S.bufs[kind] = S.bufs[kind] or buf
@@ -467,18 +463,11 @@ local function attach(buf)
   vim.wo.statusline = "%!v:lua.require'jynx'.statusline()"
   M.buffer_maps(buf)
   local g = api.nvim_create_augroup("jynx_buf_" .. buf, { clear = true })
-  -- normal-mode edits are heard (quantized to the next cycle); insert mode rehearses silently
-  api.nvim_create_autocmd("TextChanged", { group = g, buffer = buf, callback = function()
-    M.draw_sliders(buf)
-    if not edit.knob then eval_soon(buf) end
-  end })
-  api.nvim_create_autocmd("TextChangedI", { group = g, buffer = buf, callback = function()
-    S.dirty[buf] = true
+  -- edits are silent until <CR> (KNOB, :Every and scenes evaluate on their own)
+  api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, { group = g, buffer = buf, callback = function()
+    if not edit.knob then S.dirty[buf] = true end
     M.draw_sliders(buf)
     vim.cmd("redrawstatus")
-  end })
-  api.nvim_create_autocmd("InsertLeave", { group = g, buffer = buf, callback = function()
-    if S.dirty[buf] then M.eval(buf) end
   end })
   api.nvim_create_autocmd({ "BufLeave", "InsertEnter" }, { group = g, buffer = buf, callback = function()
     if edit.knob and edit.knob.buf == buf then edit.knob_exit() end

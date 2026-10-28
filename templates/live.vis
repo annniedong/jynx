@@ -5,3 +5,4 @@ kaleid 5
 rotate 0 .08
 color .9 .5 1
 feedback .8
+vis | screen

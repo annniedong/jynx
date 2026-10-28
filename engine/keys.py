@@ -5,11 +5,15 @@ It plays one of your code's patterns: its sound (.s) and its effects (.lpf, .roo
 
      w e   t y u   o p          1 2 3 4 5 6 7 8 9 0   drums
     a s d f g h j k l ; '       z x    octave down / up
-    C D E F G A B C D E F       c v    softer / louder
+    0 2 4 5 7 9 11 12 ...       c v    softer / louder
                                 Tab    next pattern
                                 Enter  copy what you played as a pattern
                                 Bksp   forget what you played
                                 Esc    quit
+
+The note keys are numbers, like n("0 1 2"): a = 0, w = 1, s = 2 ... k = 12. If the
+pattern has a .scale(), they're steps of that scale; without one they're
+semitones from C.
 
 In terminals that support the kitty keyboard protocol (Ghostty, kitty, WezTerm,
 foot) notes sound for as long as you hold the key. Elsewhere they play a fixed
@@ -32,7 +36,7 @@ import tty
 
 PORT = int(os.environ.get("JYNX_PORT", "7400"))
 
-NOTE_KEYS = "awsedftgyhujkolp;'"  # a = C, w = C#, s = D, ...
+NOTE_KEYS = "awsedftgyhujkolp;'"  # a = 0, w = 1, s = 2, ... (C, C#, D without a scale)
 DRUM_KEYS = dict(zip("1234567890", ["bd", "sd", "hh", "oh", "cp", "rim", "lt", "mt", "ht", "cr"]))
 NAMES = ["c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b"]
 
@@ -84,6 +88,7 @@ class Keys:
         self.down: dict[str, int | str] = {}  # key -> midi or drum name currently held
         self.flash: dict[str, float] = {}  # key -> time pressed (for fixed-length mode)
         self.played: list[tuple[float, str]] = []
+        self.scaled: bool | None = None  # did the last note go through a .scale()?
         self.captured = ""
         self.message = ""
         self.cycle = 0
@@ -136,7 +141,9 @@ class Keys:
             self.cycle = msg.get("n", 0)
             self.dirty = True
         elif t == "played":
-            label = note_name(msg["midi"]) if msg.get("midi") is not None else msg.get("sound")
+            self.scaled = msg.get("n") is not None if msg.get("midi") is not None else self.scaled
+            label = msg.get("n") or (note_name(round(msg["midi"])) if msg.get("midi") is not None
+                                     else msg.get("sound"))
             if label:
                 self.played.append((msg.get("pos", 0.0), label))
                 self.played = self.played[-64:]
@@ -153,13 +160,14 @@ class Keys:
         elif ch in NOTE_KEYS:
             if ch in self.down:
                 return
-            midi = 12 * (self.octave + 1) + NOTE_KEYS.index(ch)
-            msg = {"type": "down", "track": self.track, "key": ch, "midi": midi, "vel": self.vel}
+            n = NOTE_KEYS.index(ch)
+            msg = {"type": "down", "track": self.track, "key": ch, "n": n, "octave": self.octave,
+                   "vel": self.vel}
             if not held:
                 msg["hold"] = self.hold
                 self.flash[ch] = time.monotonic()
             else:
-                self.down[ch] = midi
+                self.down[ch] = n
             self.send(msg)
         elif ch == "z":
             self.octave = max(self.octave - 1, 1)
@@ -214,15 +222,19 @@ class Keys:
         black = "    " + self.cap("w", "w") + self.cap("e", "e") + "   " + "".join(
             self.cap(c, c) for c in "tyu") + "   " + self.cap("o", "o") + self.cap("p", "p")
         white = "  " + "".join(self.cap(c, c) for c in "asdfghjkl;'")
-        names = "   " + "  ".join(note_name(12 * (self.octave + 1) + NOTE_KEYS.index(c))[:-1].upper()
-                                 .ljust(1) for c in "asdfghjkl;'")
+        if self.scaled:  # scale steps, like n("0 2 4")
+            names = "   " + " ".join(str(NOTE_KEYS.index(c)).ljust(2) for c in "asdfghjkl;'")
+        else:
+            names = "   " + "  ".join(note_name(12 * (self.octave + 1) + NOTE_KEYS.index(c))[:-1].upper()
+                                     .ljust(1) for c in "asdfghjkl;'")
         drums = "  " + " ".join(self.cap(k, f"{k} {v}") for k, v in DRUM_KEYS.items())
         mode = ("\x1b[32mheld notes\x1b[0m" if self.kitty
                 else f"\x1b[33mfixed {self.hold:g}s\x1b[0m ([ ] to change)")
         beat = "●" if self.cycle % 2 == 0 else "○"
         phrase = " ".join(lbl for _, lbl in self.played[-12:])
         lines = [
-            f" \x1b[1;45m KEYS \x1b[0m → \x1b[1m{self.track}\x1b[0m   octave {self.octave} (z x)"
+            f" \x1b[1;45m KEYS \x1b[0m → \x1b[1m{self.track}\x1b[0m"
+            f"{'  in its .scale()' if self.scaled else ''}   octave {self.octave} (z x)"
             f"   velocity {self.vel:g} (c v)   {mode}   {beat}",
             "",
             black,

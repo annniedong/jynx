@@ -32,9 +32,10 @@ jynx gives vim's existing commands musical meaning and adds a few new ones.
   - `yap` copies a whole pattern.
   - `}` jumps to the next pattern.
   - `gcc` mutes a line.
-- **Modes mean something.** In normal mode, every change is heard, lined up to
-  the next cycle. Insert mode is a silent rehearsal space: you hear nothing
-  until you press `<Esc>`.
+- **You choose when it's heard.** Edits, in insert mode or normal mode, are a
+  silent rehearsal: nothing changes until you press `<CR>` in normal mode, and
+  then it lines up to the next cycle. KNOB mode and `:Every` macros play as
+  they go.
 - **Macros become generative music.** `:Every 4 @q` runs a recorded macro
   every 4 cycles, so the code rewrites itself while you play over it.
 - **New vim-style commands for patterns:** step text objects, rotate and
@@ -67,13 +68,21 @@ backup for when the audio device is being difficult.
 
 ```bash
 ./jynx engine        # audio + full-screen visuals (put this on the projector)
+./jynx screen        # visuals in their own terminal; the engine then shows only status
 ./jynx               # just the editor, if an engine is already running
+./jynx music         # only the music code (live.jynx)
+./jynx vis           # only the visuals code (live.vis)
 ./jynx keys bass     # the laptop keyboard plays the `bass` pattern
 ./jynx stop          # stop a leftover engine (e.g. "port is busy")
 ```
 
 If an engine is already running, `./jynx` opens only the editor and connects
 to it. Otherwise it opens the usual split layout.
+
+For one terminal per job, start the engine first, then `./jynx music` and
+`./jynx vis` in two more. Each takes a song name too: `./jynx vis mysong`.
+Add `./jynx screen` for the visuals on their own (it waits if the engine
+isn't up yet, and reconnects if it restarts).
 
 ---
 
@@ -108,6 +117,9 @@ run on strudel.cc. The exceptions are jynx's extra synths `bell`, `pluck` and
 - **Muting:** add `_` in front of the label (`<Space>_` toggles it), or comment
   the first line out with `gcc`. Either one silences the whole block.
 - **Globals:** `setcpm(n)`, `setcps(n)`, `hush()`.
+- **Variables:** `let lpf = slider(7420, 0, 10000)`, `let bank = "tr909"` or
+  `const wob = sine.range(1, 4)`, then `.lpf(lpf)`. Numbers work in sums too:
+  `.lpf(lpf * 2)`.
 
 ### Mini-notation (inside the strings)
 
@@ -118,6 +130,7 @@ run on strudel.cc. The exceptions are jynx's extra synths `bell`, `pluck` and
 | `[bd bd]` | group: subdivide one step |
 | `[c3,e3,g3]` | stack: play together (chords) |
 | `<c3 e3 g3>` | alternate: one per cycle |
+| `<- hh, - sd>` | several alternations at once: `<- hh>` and `<- sd>` together |
 | `bd*2` / `bd/2` | faster / slower |
 | `bd!3` | replicate: `bd bd bd` |
 | `c3@3 e3` / `c3 _ _ e3` | weight / hold: c3 lasts 3 steps |
@@ -131,22 +144,124 @@ run on strudel.cc. The exceptions are jynx's extra synths `bell`, `pluck` and
 
 Everything is synthesized, so there are no sample files.
 
-### Methods
+### Effects and sound
 
 | method | meaning (Strudel's units) |
 |---|---|
 | `.s("sawtooth")` | sound for `note()` / `n()` patterns (can be a pattern: `"<sawtooth square>"`) |
-| `.gain()` `.velocity()` | volume |
-| `.lpf()` `.hpf()` `.lpq()` | filters in Hz, resonance (aliases: `cutoff`, `hcutoff`, `resonance`) |
-| `.room()` | reverb amount, 0–1 |
-| `.delay()` `.delaytime()` `.delayfeedback()` | echo: wet amount, seconds, feedback |
+| `.note("c3 e3")` `.n("0 2")` | pitches for an `s("sawtooth*4")` pattern |
+| `.gain()` `.velocity()` `.postgain()` | volume (postgain comes after the effects) |
+| `.lpf()` `.hpf()` `.lpq()` | low/high-pass filter in Hz, resonance (aliases: `cutoff`, `hcutoff`, `resonance`) |
+| `.lpenv(8)` | filter envelope: each note's cutoff jumps up 8 octaves from `lpf` and falls back. Shape it with `.lpattack()` `.lpdecay()` `.lpsustain()` `.lprelease()` (defaults .005, .14, 0, .1) |
+| `.bandf()` `.bandq()` | band-pass filter (aliases: `bpf`, `bpq`) |
+| `.vowel("a")` | formant filter: `a e i o u`, can be a pattern: `"<a e i>"` |
+| `.distort()` | heavy distortion, 0–10 (alias `dist`). `"3:.2:diode"` = amount, then postgain, then type: `diode`, `hard`, `fold`, `cubic` or soft (the default) |
+| `.shape()` | softer waveshaping, 0–1 |
 | `.crush()` | bit depth (lower = dirtier), 1–16 |
+| `.coarse()` | sample-rate reduction, 1 = off |
+| `.phaser(rate)` `.phaserdepth()` `.phasercenter()` `.phasersweep()` | phaser, rate in Hz |
+| `.room()` | reverb amount, 0–1 |
+| `.delay()` `.delaytime()` `.delayfeedback()` | delay: wet amount, seconds, feedback |
 | `.pan()` | 0 = left, .5 = center, 1 = right |
-| `.attack()` `.decay()` `.sustain()` `.release()` | envelope |
+| `.attack()` `.decay()` `.sustain()` `.release()` `.adsr(".01:.1:.5:.2")` | envelope |
+| `.fm()` `.fmh()` | FM synthesis: index and harmonic ratio |
+| `.detune()` | spread of the `supersaw`'s five saws, in semitones (default .2). `.detune(rand)` makes every note different |
+| `.vib()` `.vibmod()` | vibrato: rate in Hz, depth in semitones |
+| `.speed()` | playback speed: `2` = octave up, negative plays drums backwards |
+| `.clip()` | note length multiplier (alias `legato`) |
+| `.cut(1)` | choke group: a new note cuts off ringing ones in the same group |
 | `.transpose()` | semitones |
-| `.scale("C4:minor")` | turns `n()` numbers into notes. Also: major, dorian, phrygian, lydian, mixolydian, locrian, "minor pentatonic", "major pentatonic", blues, chromatic |
-| `.fast()` `.slow()` `.ply()` `.rev()` `.degrade()` `.degradeBy()` | pattern transforms |
-| `.bank()` | accepted for compatibility (there is one kit) |
+| `.scale("C4:minor")` | turns `n()` numbers (and `note()` numbers, like `note(run(8))`) into notes. Write spaces as `:`, like `"Ab:minor:pentatonic"`. With no octave, the root is in octave 3. It can be a pattern: `"<C:major A:minor>"` |
+| `.o(3)` / `.orbit(3)` | which orbit (group) the pattern plays on, for ducking. Default 1 |
+| `.duck("4:5:6")` `.duckatt()` `.duckdepth()` | sidechain: each note of this pattern dips orbits 4, 5 and 6, which come back over `duckatt` seconds (default .1). `duckdepth` is 0–1 (default 1). Lists like `"2:1"` go one per orbit (aliases `duckorbit`, `duckattack`) |
+| `.bank()` `.color()` `._pianoroll()` `._scope()` … | accepted so Strudel code runs; they do nothing here (jynx has one built-in drum kit) |
+
+### Pattern functions
+
+| function | what it does |
+|---|---|
+| `.fast(2)` `.slow(2)` `.hurry(2)` | speed up / slow down (hurry also raises the pitch) |
+| `.early(.25)` `.late(.25)` | shift in time, in cycles |
+| `.rev()` `.palindrome()` | backwards / every other cycle backwards |
+| `.ply(2)` | repeat each event |
+| `.iter(4)` `.iterBack(4)` | start one step later each cycle |
+| `.linger(.25)` | loop the first quarter |
+| `.zoom(.25, .75)` | play only part of the cycle, stretched |
+| `.swing(4)` `.swingBy(1/3, 4)` | swing |
+| `.press()` `.brak()` | push onto the off-beat / breakbeat variation |
+| `.struct("x ~ x x")` `.mask("1 0 1 1")` | impose a rhythm / silence parts |
+| `.euclid(3,8)` `.euclidRot(3,8,2)` `.euclidLegato(3,8)` | euclidean rhythms |
+| `.segment(4)` | sample a pattern (or a signal) 4 times a cycle |
+| `.arp("0 2 1")` `.arpeggiate()` | play chords as arpeggios |
+| `.add(12)` `.sub(12)` | shift notes: semitones for `note()`, scale steps for `n()` |
+| `.degrade()` `.degradeBy(.3)` | randomly drop events |
+| `.sometimes(f)` `.often(f)` `.rarely(f)` `.almostNever(f)` `.almostAlways(f)` `.sometimesBy(.3, f)` | randomly apply `f` to some events |
+| `.someCycles(f)` `.someCyclesBy(.3, f)` | randomly apply `f` to whole cycles |
+| `.every(4, f)` `.firstOf(4, f)` `.lastOf(4, f)` | apply `f` every 4th cycle |
+| `.chunk(4, f)` `.chunkBack(4, f)` | apply `f` to a moving quarter of the cycle |
+| `.off(1/8, f)` | add a shifted copy changed by `f` |
+| `.superimpose(f)` `.layer(f, g)` | add / stack transformed copies |
+| `.jux(f)` `.juxBy(.5, f)` | original on the left, `f` on the right |
+| `.echo(3, 1/8, .5)` `.stut(3, .5, 1/8)` `.echoWith(3, 1/8, f)` | rhythmic echoes |
+| `.inside(2, f)` `.outside(2, f)` | apply `f` at a slower / faster time scale |
+
+A function `f` can be written three ways: `x => x.add(12).gain(.5)`, a bare
+name like `rev`, or a single call like `fast(2)`. Inside a function, effects
+only touch the events the function makes: `.every(4, x => x.lpf(300))` filters
+every fourth cycle and leaves the rest alone.
+
+Most numbers can be patterns: `.fast("<1 2 4>")`, `.degradeBy("<0 .5>")`,
+`.add("<0 3 5>")`.
+
+**Scales:** major, minor, ionian, dorian, phrygian, lydian, mixolydian,
+aeolian, locrian, harmonic minor, melodic minor, harmonic major, phrygian
+dominant, lydian dominant, altered (super locrian), dorian b2, lydian
+augmented, locrian #2, mixolydian b6, locrian major, ultralocrian, leading
+whole tone, double harmonic (byzantine), hungarian minor, hungarian major,
+neapolitan major / minor, persian, enigmatic, oriental, bebop, bebop major,
+bebop minor, diminished, half-whole diminished, augmented, prometheus, whole
+tone, chromatic, blues (minor blues), major blues, pentatonic, major
+pentatonic, minor pentatonic, minor hexatonic, ionian / mixolydian / lydian /
+locrian pentatonic, minor six pentatonic, scriabin, hirajoshi, in-sen, iwato,
+kumoijoshi, pelog, egyptian, ritusen.
+
+### run()
+
+`run(n)` counts up from 0: `run(4)` is the same as `"0 1 2 3"`. Use it
+wherever a pattern of numbers goes. The count can be a pattern or a signal too.
+
+```js
+arp: n(run(8)).scale("C4:minor").s("pluck")         // up the scale
+grow: n(run("<4 8>")).scale("Ab:minor:pentatonic")   // 4 steps, then 8
+up: n(run(saw.range(2, 8).slow(4))).scale("D:dorian") // more steps each cycle
+```
+
+### Signals
+
+Continuous values for sweeps: `sine cosine saw isaw tri square rand perlin`
+and `irand(n)`. They go from 0 to 1. Shape them with `.range(lo, hi)`,
+`.rangex(lo, hi)` (exponential, good for filters), `.slow(n)`, `.fast(n)`,
+`.add() .sub() .mul() .div()` and `.segment(n)`.
+
+```js
+bass: note("c2*8").s("sawtooth")
+  .lpf(sine.range(200, 3000).slow(4))     // a smooth filter sweep over 4 cycles
+
+lead: n(irand(8).segment(8)).scale("C4:minor").s("pluck")   // random melody
+```
+
+On an effect like `lpf`, a signal moves smoothly even while a note rings.
+
+**Every number argument takes a signal**, a `"pattern"` or `run()`, not only
+effects: `.fast(sine.range(1, 4))`, `.euclid(saw.range(3, 7), 8)`,
+`.echo(3, sine.range(1/16, 1/8), .5)`, `.juxBy(sine, rev)` and so on. A function
+like `fast` reads the signal 16 times a cycle. Like on strudel.cc, a signal on
+a timing function (`fast`, `late`, `ply`, ...) can make an event play twice or
+not at all at the moment the value changes, which is part of the sound.
+
+**Not supported yet:** `stack()` / `cat()` at the top level, `chord()` /
+`voicing()`, and sample functions like `chop`, `striate` and `loopAt`. jynx
+has no sample files.
 
 When you edit, **pattern changes apply at the next cycle**, so they always land
 on the beat. **Fixed effect values apply immediately**, so knobs feel live. If
@@ -220,7 +335,7 @@ terminal window:
 ```
   w e   t y u   o p          1 2 3 4 5 6 7 8 9 0   drums (bd sd hh oh cp rim lt mt ht cr)
  a s d f g h j k l ; '       z x    octave down / up
- C D E F G A B C D E F       c v    softer / louder
+ 0 2 4 5 7 9 . . . . .       c v    softer / louder
                              Tab    next pattern
                              Enter  capture what you played as a pattern
                              Bksp   forget it
@@ -230,12 +345,19 @@ terminal window:
 - **Your code defines the instrument.** The keyboard plays the pattern you
   point it at, using that pattern's `.s()` sound and all its effects. The
   template has a silent `keys: note("~")` pattern just for this.
+- **The keys are numbers, like `n("0 1 2")`:** `a` = 0, `w` = 1, `s` = 2 … `k` =
+  12, up to `'` = 17. If the pattern has a `.scale()`, the numbers are steps
+  of that scale, so `keys: n("~").scale("Ab:minor:pentatonic")` makes every
+  key land in Ab minor pentatonic. A patterned scale (`"<C:major A:minor>"`)
+  follows along as it changes. Without a scale, the keys are semitones from C,
+  like a piano. `z` / `x` move a whole octave of the scale.
 - **Held notes:** in terminals with the kitty keyboard protocol (Ghostty,
   kitty, WezTerm, and Neovim's own terminal, so `<Space>k` too), a note sounds
   for as long as you hold the key. Elsewhere, notes play a fixed length that
   `[` and `]` adjust.
 - **Capture:** play a phrase over the beat, then press Enter. jynx snaps it
-  to the cycle grid and copies it as mini-notation, for example `c4 ~ e4 g4`,
+  to the cycle grid and copies it as mini-notation: numbers like `0 ~ 2 4`
+  in a scale (ready for `n("...")`), or note names like `c4 ~ e4 g4` without one,
   or `<[...] [...]>` if it spans several cycles. Back in the editor, put the
   cursor on a pattern string and press `<Space>p`.
 
@@ -282,6 +404,7 @@ kaleid 5                  -- geometry bends every source, wherever it's written
 rotate 0 .08
 color .9 .5 1             -- color ops apply top to bottom
 feedback .8               -- trails
+vis | screen              -- pipe it to the screen: nothing shows without this
 ```
 
 - **Arguments are expressions.** Write them without spaces inside.
@@ -289,6 +412,10 @@ feedback .8               -- trails
   reacts to the bass.
 - You can also use `t` (seconds), `cycle`, `sin`, `cos`, `abs` and `pi`.
 - `gs` (KNOB) works on any number in a `.vis` buffer.
+- **`vis | screen`** sends the picture to the screen, whether that's the
+  engine's terminal or a `./jynx screen`. Without it the screen stays black,
+  while the music and the levels the visuals read keep running. So a set can
+  start dark: delete the line (`dd`) to cut the picture and `p` to bring it back.
 
 | kind | ops |
 |---|---|

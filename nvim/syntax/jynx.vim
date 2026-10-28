@@ -5,8 +5,12 @@ syn match   jynxLabel    "^[A-Za-z0-9$][A-Za-z0-9_$]*\ze\s*:"
 syn match   jynxMuted    "^_[A-Za-z0-9_$]*\ze\s*:"
 syn match   jynxHead     "\<\(s\|sound\|note\|n\)\ze("
 syn match   jynxMethod   "\.\zs[A-Za-z_]\w*\ze\s*("
-syn keyword jynxGlobal   setcpm setcps hush
+syn keyword jynxGlobal   setcpm setcps hush let const var
 syn keyword jynxSlider   slider
+syn match   jynxGlobal   "\<run\ze("
+syn keyword jynxSignal   sine cosine saw isaw tri square rand irand perlin
+syn match   jynxArrow    "=>"
+syn match   jynxParam    "\<\h\w*\ze\s*=>"
 syn match   jynxNumber   "\v(\w)@<!-?\d*\.?\d+"
 
 " mini-notation inside strings
@@ -29,6 +33,9 @@ hi def link jynxHead        Keyword
 hi def link jynxMethod      Identifier
 hi def link jynxGlobal      Keyword
 hi def link jynxSlider      Special
+hi def link jynxSignal      Constant
+hi def link jynxArrow       Operator
+hi def link jynxParam       Identifier
 hi def link jynxNumber      Number
 hi def link jynxString      String
 hi def link jynxMiniBracket Delimiter

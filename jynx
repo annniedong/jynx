@@ -2,6 +2,8 @@
 # jynx [name]   open name.jynx + name.vis (created from templates if missing)
 # jynx engine   run only the engine (audio + full-screen visuals) in this terminal;
 #                editors started afterwards in other terminals connect to it
+# jynx music [name] / jynx vis [name]   open only the music / only the visuals code
+# jynx screen   draw the visuals in this terminal (the engine's own then shows only status)
 # jynx keys [pattern]  play a pattern from the laptop keyboard (needs a running engine)
 # jynx stop     stop any running engine
 set -e
@@ -19,6 +21,12 @@ if [ "$1" = "keys" ]; then
   exec "$PY" -m engine.keys "${2:-keys}"
 fi
 
+if [ "$1" = "screen" ]; then
+  cd "$ROOT"
+  PY="$ROOT/.venv/bin/python"; [ -x "$PY" ] || PY=python3
+  exec "$PY" -m engine.screen
+fi
+
 if [ "$1" = "engine" ]; then
   cd "$ROOT"
   PY="$ROOT/.venv/bin/python"; [ -x "$PY" ] || PY=python3
@@ -30,8 +38,18 @@ if (echo > "/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
   export JYNX_ENGINE=external
 fi
 
+# jynx music [name] / jynx vis [name]: just one file, for a terminal of its own
+OPEN=jynx
+if [ "$1" = "music" ] || [ "$1" = "vis" ]; then
+  [ "$1" = "vis" ] && OPEN=vis
+  export JYNX_ONLY="$1"
+  export JYNX_ENGINE=external  # never start an engine here: wait for ./jynx engine
+  shift
+fi
+
 NAME="${1:-live}"
 NAME="${NAME%.jynx}"
+NAME="${NAME%.vis}"
 [ -f "$NAME.jynx" ] || cp "$ROOT/templates/live.jynx" "$NAME.jynx"
 [ -f "$NAME.vis" ] || cp "$ROOT/templates/live.vis" "$NAME.vis"
-exec nvim -u "$ROOT/nvim/init.lua" "$NAME.jynx" -c "JynxStart"
+exec nvim -u "$ROOT/nvim/init.lua" "$NAME.$OPEN" -c "JynxStart"
