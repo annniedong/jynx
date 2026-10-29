@@ -107,6 +107,8 @@ function M.on_message(msg)
   local t = msg.type
   if t == "hits" then
     show_hits(msg.hits)
+  elseif t == "tracks" then
+    S.track_lines = msg.lines or {}
   elseif t == "cycle" then
     S.cycle = msg.n
     run_every(msg.n)
@@ -121,6 +123,14 @@ function M.on_message(msg)
     end
     vim.diagnostic.set(ns_diag, buf, diags)
     S.errors[msg.buffer] = #diags
+    if t == "error" then  -- the exact error text, in the message area at the bottom
+      local chunks = {}
+      for i, e in ipairs(msg.errors or {}) do
+        chunks[#chunks + 1] = { string.format("%sjynx %s line %d:%d  %s", i > 1 and "\n" or "",
+          msg.buffer, e.line, e.col + 1, e.msg), "ErrorMsg" }
+      end
+      api.nvim_echo(chunks, true, {})
+    end
     vim.cmd("redrawstatus!")
   end
 end
@@ -273,7 +283,9 @@ local function block_label(buf)
   for r = row, 1, -1 do
     local mute, name = lines[r]:match("^(_?)([%w_$]+)%s*:")
     if name then return r, mute == "_", name end
-    if r < row and lines[r]:match("^%S") and not lines[r]:match("^//") then return nil end
+    if r < row and lines[r]:match("^%S") and not lines[r]:match("^//") and not lines[r]:match("^%.") then
+      return nil
+    end
   end
 end
 
@@ -292,8 +304,14 @@ end
 -- Open the laptop-keyboard instrument in a split, playing the pattern under the cursor.
 function M.keyboard()
   local buf = api.nvim_get_current_buf()
-  local _, muted, name = block_label(buf)
-  local track = (name and not muted and name ~= "$") and name or "keys"
+  local row, muted, name = block_label(buf)
+  local track = (name and not muted and name ~= "$") and name or nil
+  if row and not muted and not track then  -- a $: pattern: the engine knows it as p1, p2, ...
+    for n, line in pairs(S.track_lines or {}) do
+      if line == row then track = n end
+    end
+  end
+  track = track or "keys"
   local py = S.root .. "/.venv/bin/python"
   if vim.fn.executable(py) == 0 then py = "python3" end
   local prev = api.nvim_get_current_win()

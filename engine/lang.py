@@ -25,7 +25,7 @@ from dataclasses import dataclass, field, replace
 from . import pat as P
 from . import pattern, synth
 
-HEADS = {"s": "s", "sound": "s", "note": "note", "n": "n"}
+HEADS = {"s": "s", "sound": "s", "note": "note", "n": "n", "chord": "chord"}
 
 # canonical name -> (default, min, max)
 NUM_PARAMS = {
@@ -52,6 +52,11 @@ NUM_PARAMS = {
     "lpsustain": (0.0, 0.0, 1.0),
     "lprelease": (0.1, 0.0, 4.0),
     "orbit": (1.0, 0.0, 16.0),
+    # FM envelope: the FM amount follows its own ADSR (-1 = not set: no envelope)
+    "fmattack": (-1.0, -1.0, 4.0),
+    "fmdecay": (-1.0, -1.0, 4.0),
+    "fmsustain": (-1.0, -1.0, 1.0),
+    "fmrelease": (-1.0, -1.0, 4.0),
     # whole track (so knobs act on notes that are still ringing)
     "lpf": (20000.0, 20.0, 20000.0),
     "hpf": (0.0, 0.0, 10000.0),
@@ -73,7 +78,7 @@ NUM_PARAMS = {
     "pan": (0.5, 0.0, 1.0),
     "postgain": (1.0, 0.0, 4.0),
 }
-STR_PARAMS = ("s", "vowel", "note", "n")
+STR_PARAMS = ("s", "vowel", "note", "n", "fmenv")
 # sidechain: .duck("4:5:6") ducks those orbits each time this pattern plays;
 # lists like "2:1" go one per orbit
 DUCK_PARAMS = ("duckorbit", "duckattack", "duckdepth")
@@ -84,16 +89,17 @@ ALIASES = {
     "rel": "release", "trans": "transpose", "vel": "velocity", "legato": "clip",
     "bpf": "bandf", "bp": "bandf", "bpq": "bandq", "dist": "distort", "ph": "phaser",
     "phd": "phaserdepth", "phasdp": "phaserdepth", "phc": "phasercenter", "phs": "phasersweep",
-    "firstOf": "every",
+    "firstOf": "every", "seg": "segment", "fmatt": "fmattack", "fmdec": "fmdecay",
+    "fmsus": "fmsustain", "fmrel": "fmrelease",
     "o": "orbit", "duck": "duckorbit", "duckatt": "duckattack", "lpe": "lpenv",
     "lpa": "lpattack", "lpd": "lpdecay", "lps": "lpsustain", "lpr": "lprelease",
 }
 TRACK_LEVEL = ("lpf", "hpf", "lpq", "bandf", "bandq", "crush", "coarse", "shape", "distort",
                "phaser", "phaserdepth", "phasercenter", "phasersweep", "vowel",
-               "room", "delay", "delaytime", "delayfb", "pan", "postgain")
+               "room", "delay", "delaytime", "delayfb", "pan", "postgain", "orbit")
 VOWELS = {"a", "e", "i", "o", "u"}
 # accepted so Strudel code runs; they only change how strudel.cc draws or routes things
-NO_OPS = ("bank", "color", "colour", "analyze", "pianoroll", "punchcard", "scope",
+NO_OPS = ("bank", "voicing", "voicings", "dict", "anchor", "end", "begin", "fmwave", "color", "colour", "analyze", "pianoroll", "punchcard", "scope",
           "spiral", "markcss", "_pianoroll", "_punchcard", "_scope", "_spiral")
 # pattern functions that make sense with no arguments: .jux(rev), .every(2, palindrome)
 BARE_FNS = ("rev", "palindrome", "brak", "degrade", "arpeggiate", "press")
@@ -132,6 +138,55 @@ SCALES = {
     "iwato": [0, 1, 5, 6, 10], "kumoijoshi": [0, 1, 5, 7, 8], "pelog": [0, 1, 3, 7, 8],
     "egyptian": [0, 2, 5, 7, 10], "ritusen": [0, 2, 5, 7, 9],
 }
+
+
+CHORD_BASES = {  # quality -> semitones above the root
+    "": [0, 4, 7], "M": [0, 4, 7], "m": [0, 3, 7], "dim": [0, 3, 6], "o": [0, 3, 6],
+    "aug": [0, 4, 8], "+": [0, 4, 8], "5": [0, 7], "sus2": [0, 2, 7], "sus4": [0, 5, 7],
+    "sus": [0, 5, 7], "6": [0, 4, 7, 9], "m6": [0, 3, 7, 9], "69": [0, 4, 7, 9, 14],
+    "m69": [0, 3, 7, 9, 14], "7": [0, 4, 7, 10], "M7": [0, 4, 7, 11], "m7": [0, 3, 7, 10],
+    "mM7": [0, 3, 7, 11], "dim7": [0, 3, 6, 9], "o7": [0, 3, 6, 9], "m7b5": [0, 3, 6, 10],
+    "h7": [0, 3, 6, 10], "h": [0, 3, 6, 10], "7sus4": [0, 5, 7, 10], "7sus": [0, 5, 7, 10],
+    "9": [0, 4, 7, 10, 14], "M9": [0, 4, 7, 11, 14], "m9": [0, 3, 7, 10, 14],
+    "9sus4": [0, 5, 7, 10, 14], "9sus": [0, 5, 7, 10, 14], "11": [0, 7, 10, 14, 17],
+    "M11": [0, 4, 7, 11, 14, 17], "m11": [0, 3, 7, 10, 14, 17], "13": [0, 4, 7, 10, 14, 21],
+    "M13": [0, 4, 7, 11, 14, 21], "m13": [0, 3, 7, 10, 14, 21], "add9": [0, 4, 7, 14],
+    "madd9": [0, 3, 7, 14], "M7#5": [0, 4, 8, 11], "7#5": [0, 4, 8, 10],
+}
+CHORD_RE = re.compile(r"^([A-Ga-g])([#b]?)(.*)$")
+ALTER_RE = re.compile(r"(#|b)(5|9|11|13)|add(9|11|13)|[(),]")
+
+
+def chord_notes(sym: str):
+    """ "AM9#11" -> midi notes, close-voiced with the top note at or just below C5
+    (like Strudel's voicing() default anchor). None if it isn't a chord."""
+    m = CHORD_RE.match(sym.split(":")[0])
+    if not m:
+        return None
+    root = "cdefgab".index(m.group(1).lower())
+    root = [0, 2, 4, 5, 7, 9, 11][root] + {"#": 1, "b": -1}.get(m.group(2), 0)
+    q = m.group(3)
+    for a, b in (("maj", "M"), ("^", "M"), ("Δ", "M"), ("min", "m"), ("-", "m"), ("ø", "h")):
+        q = q.replace(a, b)
+    base = next((k for k in sorted(CHORD_BASES, key=len, reverse=True)
+                 if q.startswith(k) and not ALTER_RE.sub("", q[len(k):])), None)
+    if base is None:
+        return None
+    iv = list(CHORD_BASES[base])
+    for alt in ALTER_RE.finditer(q[len(base):]):
+        if alt.group(3):
+            iv.append({"9": 14, "11": 17, "13": 21}[alt.group(3)])
+        elif alt.group(2):
+            deg = {"5": 7, "9": 14, "11": 17, "13": 21}[alt.group(2)]
+            new = deg + (1 if alt.group(1) == "#" else -1)
+            iv = [x for x in iv if x != deg] + [new]
+    iv = sorted(set(iv))
+    notes = [60 + root + x for x in iv]
+    while notes[-1] > 72:
+        notes = [n - 12 for n in notes]
+    while notes[-1] + 12 <= 72:
+        notes = [n + 12 for n in notes]
+    return notes
 
 
 def scale_of(text: str):
@@ -321,6 +376,7 @@ class Parser:
         self.errors: list[LangError] = []
         self.anon = 0
         self.vars: dict = {}  # let name = value
+        self.seeds = 0
 
     # -- token helpers
     def peek(self, k=0):
@@ -383,6 +439,9 @@ class Parser:
         if t.kind == "id" and self.at_op(":", 1):
             self.next()
             self.next()
+            nxt = self.peek()
+            if nxt is not None and nxt.kind == "id" and nxt.text in ("setcpm", "setcps", "hush"):
+                return self.statement()  # $: setcpm(140/4)
             self.chain(t.text, t)
             return
         if t.kind == "id" and t.text in ("setcpm", "setcps"):
@@ -416,13 +475,25 @@ class Parser:
         self.expect("(", f"after {head.text}")
         src = self.arg()
         kind = HEADS[head.text]
-        if isinstance(src, Tok):
+        if kind == "chord":
+            if not isinstance(src, Tok):
+                raise LangError('chord() takes chord names in quotes, like chord("C^7 Am7")',
+                                head.line, head.col)
+            node = self.mini(src)
+            for w in pattern.words(node):
+                if chord_notes(w.value) is None:
+                    raise LangError(f"'{w.value}' is not a chord I know (try C, Am7, F^7, G7, AM9#11)",
+                                    w.span[0], w.span[1])
+            pat = P.Pat(lambda b, e, src=P.from_node(node): [
+                replace(h, value=m) for h in src.q(b, e) for m in chord_notes(h.value)])
+            kind = "note"
+        elif isinstance(src, Tok):
             node = self.mini(src)
             self.check_values(kind, node, src)
             pat = P.from_node(node)
         elif isinstance(src, SigArg) and src.seg and kind != "s":
             pat = P.segment_sig(src.sig, src.seg)
-        elif isinstance(src, PatArg) and kind != "s":
+        elif isinstance(src, PatArg):
             pat = src.pat
         else:
             raise LangError(f"{head.text}() needs a pattern string, like {head.text}(\"...\")"
@@ -567,7 +638,7 @@ class Parser:
             if isinstance(a, Fn):
                 raise bad(f".{t.text}() takes a value, not a function")
             if isinstance(a, Tok):
-                kind = {"s": "s", "vowel": "vowel", "note": "note", "n": "n"}.get(name, "num")
+                kind = {"s": "s", "vowel": "vowel", "note": "note", "n": "n", "fmenv": "any"}.get(name, "num")
                 node = self.mini(a)
                 self.check_values(kind, node, a)
                 one = list(pattern.words(node))
@@ -782,6 +853,8 @@ class Parser:
         t = self.peek()
         if t is None:
             raise LangError("expected an argument", self.end_line(), 0)
+        if t.kind == "str" and self.at_op(".", 1):
+            return self.string_chain()
         if t.kind == "str":
             return self.next()
         if t.kind == "id" and t.text in self.vars and not self.at_op("(", 1) \
@@ -813,6 +886,17 @@ class Parser:
             raise LangError(f"'{t.text}' can't be used here (functions look like x => x.fast(2))",
                             t.line, t.col)
         return self.expr()
+
+    def string_chain(self):
+        """note("<0 2 4>".fast(2).add(perlin.range(-3, 3))): methods straight on a string."""
+        tok = self.next()
+        pat = P.from_node(self.mini(tok))
+        tmp = Track(name=f"str{tok.line}:{tok.col}", line=tok.line, head="n")
+        while self.at_op("."):
+            self.next()
+            mtok, mname, args = self.call()
+            pat = self.apply(tmp, pat, mtok, mname, args, lam=True)
+        return PatArg(pat)
 
     def run_arg(self):
         """run(8) = "0 1 2 3 4 5 6 7"; the count can be a pattern or a signal too."""

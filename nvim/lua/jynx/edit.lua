@@ -299,6 +299,7 @@ M.RANGES = {
   fm = { 0, 16 }, fmh = { 0.25, 8 }, vib = { 0, 16 }, vibmod = { 0, 4 },
   detune = { 0, 2 }, lpenv = { -8, 8 }, lpattack = { 0, 1 }, lpdecay = { 0, 1 }, lpsustain = { 0, 1 },
   lprelease = { 0, 1 }, orbit = { 1, 8, int = true }, duckattack = { 0, 1 }, duckdepth = { 0, 1 },
+  fmattack = { 0, 1 }, fmdecay = { 0, 2 }, fmsustain = { 0, 1 }, fmrelease = { 0, 1 },
   fast = { 1, 8 }, slow = { 1, 8 }, hurry = { 1, 8 }, ply = { 1, 8, int = true },
   iter = { 1, 8, int = true }, every = { 1, 16, int = true }, chunk = { 1, 16, int = true },
   echo = { 1, 8, int = true }, degradeBy = { 0, 1 }, sometimesBy = { 0, 1 }, linger = { 0.05, 1 },

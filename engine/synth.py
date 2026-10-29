@@ -39,9 +39,31 @@ def wave_name(name: str) -> str | None:
     return name if name in WAVES else None
 
 
+# Strudel drum-machine names jynx has no sample for: the nearest drum in the kit
+DRUM_ALIASES = {"perc": "cb", "misc": "cb", "sh": "hh", "shaker": "hh", "ride": "cr", "crash": "cr",
+                "tom": "mt", "kick": "bd", "snare": "sd", "clap": "cp", "hat": "hh", "rimshot": "rim"}
+# Strudel's soundfont (gm_...) and ZZFX (z_...) names: the closest built-in synth
+SYNTH_HINTS = (("supersaw", "supersaw"), ("saw", "sawtooth"), ("square", "square"),
+               ("tri", "triangle"), ("sine", "sine"), ("pluck", "pluck"), ("guitar", "pluck"),
+               ("harp", "pluck"), ("bell", "bell"), ("glock", "bell"), ("vibraphone", "bell"),
+               ("bass", "sub"))
+
+
 def sound_base(name: str) -> str:
-    """Strudel sample variants like bd:3 play our single bd."""
-    return name.split(":")[0]
+    """Strudel sample variants like bd:3 play our single bd; tr909_bd plays bd;
+    gm_lead_2_sawtooth plays sawtooth."""
+    name = name.split(":")[0]
+    if name in DRUMS or wave_name(name):
+        return name
+    if name in DRUM_ALIASES:
+        return DRUM_ALIASES[name]
+    tail = name.rsplit("_", 1)[-1]
+    if tail in DRUMS or tail in DRUM_ALIASES:  # a bank prefix: tr909_bd
+        return DRUM_ALIASES.get(tail, tail)
+    low = name.lower()
+    if low.startswith(("gm_", "z_")):
+        return next((w for key, w in SYNTH_HINTS if key in low), "triangle")
+    return name
 
 
 def is_sound(name: str) -> bool:
@@ -101,7 +123,7 @@ def _wave(kind: str, f, t: np.ndarray, fm: float = 0.0, fmh: float = 1.0,
           detune: float = 0.2) -> np.ndarray:
     """f is a frequency, or an array of them (vibrato)."""
     ph = np.cumsum(np.broadcast_to(f, t.shape)) / SR if np.ndim(f) else f * t
-    if fm > 0:  # Strudel's .fm(index).fmh(ratio): a sine modulating the phase
+    if np.ndim(fm) or fm > 0:  # Strudel's .fm(index).fmh(ratio): a sine modulating the phase
         ph = ph + fm * np.sin(TAU * ph * fmh) / TAU
     if kind == "sine":
         return np.sin(TAU * ph)
@@ -123,13 +145,22 @@ def _wave(kind: str, f, t: np.ndarray, fm: float = 0.0, fmh: float = 1.0,
 
 
 def _note(midi, wave, dur, attack, decay, sustain, release,
-          fm=0.0, fmh=1.0, vib=0.0, vibmod=0.5, detune=0.2) -> np.ndarray:
+          fm=0.0, fmh=1.0, vib=0.0, vibmod=0.5, detune=0.2, fmenv=None) -> np.ndarray:
     """dur = how long the key is held (seconds). ADSR envelope. vib = vibrato rate
     (Hz), vibmod = its depth (semitones); fm / fmh = FM index / harmonic ratio."""
     f = 440.0 * 2 ** ((midi - 69) / 12)
     t = _t(dur + release)
     if vib > 0:
         f = f * 2 ** (vibmod * np.sin(TAU * vib * t) / 12)
+    if fmenv and fm > 0:  # (attack, decay, sustain, release, "lin" | "exp"): the FM amount moves
+        fa, fd, fs, fr, curve = fmenv
+        fa, fd = max(fa, 0.001), max(fd, 0.001)
+        e = np.where(t < fa, t / fa, np.maximum(1 - (1 - fs) * (t - fa) / fd, fs))
+        held = min(int(dur * SR), len(t))
+        if held < len(t):
+            lvl = e[held - 1] if held > 0 else 0.0
+            e[held:] = lvl * np.clip(1 - (t[held:] - t[held]) / max(fr, 0.001), 0, 1)
+        fm = fm * (e ** 2 if curve == "exp" else e)
     y = _wave(wave, f, t, fm, fmh, detune)
     a, d = max(attack, 0.002), max(decay, 0.001)
     env = np.where(t < a, t / a, np.maximum(1 - (1 - sustain) * (t - a) / d, sustain))

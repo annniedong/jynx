@@ -6,7 +6,7 @@ Protocol (one JSON object per line):
                      {"type": "down", "track": "keys", "key": "1", "sound": "bd"}
                      {"type": "up", "track": "keys", "key": "a"}
   engine -> clients  {"type": "ok"|"error", "buffer": ..., "errors": [...]}
-                     {"type": "tracks", "names": [...]}
+                     {"type": "tracks", "names": [...], "lines": {name: line}}
                      {"type": "cycle", "n": 12}
                      {"type": "hits", "hits": [[line, col0, col1, seconds], ...]}
                      {"type": "played", "key": "a", "midi": 60, "n": "0", "pos": 12.37}
@@ -91,7 +91,7 @@ class App:
                 return self.fail("music", e.errors)
             self.engine.set_program(prog)
             self.succeed("music")
-            self.hub.post({"type": "tracks", "names": list(prog.tracks)})
+            self.post_tracks(prog)
         elif kind == "vis":
             try:
                 ops = vis.parse(msg.get("text", ""))
@@ -119,7 +119,13 @@ class App:
         elif kind == "up":
             self.engine.key_up(str(msg.get("track") or "keys"), msg.get("key"))
         elif kind == "hello":
-            self.hub.post({"type": "tracks", "names": list(self.engine.live.tracks)})
+            self.post_tracks(self.engine.live)
+
+    def post_tracks(self, prog):
+        """Track names, and the line each starts on: $: patterns are only p1, p2, ... here,
+        so the editor finds the one under the cursor by its line."""
+        self.hub.post({"type": "tracks", "names": list(prog.tracks),
+                       "lines": {n: t.line for n, t in prog.tracks.items()}})
 
     def succeed(self, buf):
         self.errors[buf] = None

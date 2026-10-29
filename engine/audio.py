@@ -218,9 +218,16 @@ def note_buffer(track: Track, h, cycle_pos: float, dur_s: float):
             return None
         if speed > 0 and speed != 1:
             midi += 12 * math.log2(speed)
+        fe = [at(k) for k in ("fmattack", "fmdecay", "fmsustain", "fmrelease")]
+        fmenv = None
+        if any(v >= 0 for v in fe) or at("fmenv"):  # like Strudel: decay set, sustain unset -> 0
+            fa, fd, fs, fr = fe
+            fmenv = (fa if fa >= 0 else 0.001, fd if fd >= 0 else 0.1,
+                     fs if fs >= 0 else (0.0 if fd >= 0 else 1.0), fr if fr >= 0 else 0.1,
+                     str(at("fmenv") or "lin").lower())
         args = (midi + at("transpose"), wave, round(dur_s, 4),
                 at("attack"), at("decay"), at("sustain"), at("release"),
-                at("fm"), at("fmh"), at("vib"), at("vibmod"), round(at("detune"), 2))
+                at("fm"), at("fmh"), at("vib"), at("vibmod"), round(at("detune"), 2), fmenv)
         env = at("lpenv")
         if env:  # the note gets its own enveloped filter; the track's lpf is skipped
             base = clamp("lpf", ctl["lpf"]) if "lpf" in ctl else track.value("lpf", cycle_pos)
@@ -255,8 +262,24 @@ class Engine:
     # -------------------------------------------------------------- control
 
     def set_program(self, prog: Program):
+        self.warm(prog)
         with self.lock:
             self.live = prog
+
+    def warm(self, prog: Program, budget: float = 0.25):
+        """Render the next cycles' notes now, on the editor's thread, so the audio thread
+        finds them cached instead of building every new note at once on the downbeat."""
+        start = time.perf_counter()
+        k0 = math.floor(self.cycle_pos)
+        for k in (k0, k0 + 1, k0 + 2):
+            for track in prog.tracks.values():
+                try:
+                    for h in track.query(k):
+                        note_buffer(track, h, k + h.start, h.dur / prog.cps)
+                except Exception:
+                    return  # the audio thread will report it when it gets there
+                if time.perf_counter() - start > budget:
+                    return
 
     def hush(self, on: bool):
         self.hushed = on
@@ -425,8 +448,7 @@ class Engine:
                 if bkey and bus.idle > SR * 8 // BLOCK:  # extra buses go once their tails die
                     del st.buses[bkey]
                     continue
-                g = duck_gain.get(int(tr.const("orbit")))
-                x = self._effects(tr, bus, x, c0, frames, left, right, send, g)
+                x = self._effects(tr, bus, x, c0, frames, left, right, send, duck_gain)
                 peak = max(peak, float(np.max(np.abs(x))) if frames else 0.0)
             st.level = max(st.level * 0.8, min(peak * 1.5, 1.0))
             if not st.voices and not in_code and st.level < 0.01:
@@ -562,8 +584,10 @@ class Engine:
         bus.delay.write(x * (wet > 0) + echoed * p("delayfb"))
         x = x + echoed * wet
 
-        if duck is not None:
-            x = x * duck
+        if duck:  # .o("2:3:4") plays on several orbits: any of them ducking dips it
+            gains = [duck[int(o)] for o in _floats(raw("orbit"), 1.0) if int(o) in duck]
+            if gains:
+                x = x * (gains[0] if len(gains) == 1 else np.minimum.reduce(gains))
         send += x * p("room")
         pan = p("pan") * math.pi / 2  # Strudel: 0 = left, .5 = center, 1 = right
         left += x * math.cos(pan)

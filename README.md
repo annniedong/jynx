@@ -109,14 +109,16 @@ run on strudel.cc. The exceptions are jynx's extra synths `bell`, `pluck` and
 `sub`, which strudel.cc doesn't have.
 
 - **Pattern starts:** a pattern begins with `s("...")` / `sound("...")` for
-  drums and synth names, `note("...")` for note names or midi numbers, or
-  `n("...")` with `.scale()`.
+  drums and synth names, `note("...")` for note names or midi numbers,
+  `n("...")` with `.scale()`, or `chord("...")` (below).
+- **Methods on a string:** `note("<0 2 4>".chunkBack(4, x => x.add(4)).add(perlin.range(-3, 3)))`
+  works like on strudel.cc.
 - **Labels:** each pattern has a label, either `name:` or `$:` for an unnamed
   one. Names show up in the visuals as live levels (`bass`, `drums`, ...).
   Unnamed patterns become `p1`, `p2`, ...
 - **Muting:** add `_` in front of the label (`<Space>_` toggles it), or comment
   the first line out with `gcc`. Either one silences the whole block.
-- **Globals:** `setcpm(n)`, `setcps(n)`, `hush()`.
+- **Globals:** `setcpm(n)`, `setcps(n)`, `hush()`, also written with a label, like `$: setcpm(140/4)`.
 - **Variables:** `let lpf = slider(7420, 0, 10000)`, `let bank = "tr909"` or
   `const wob = sine.range(1, 4)`, then `.lpf(lpf)`. Numbers work in sums too:
   `.lpf(lpf * 2)`.
@@ -142,7 +144,19 @@ run on strudel.cc. The exceptions are jynx's extra synths `bell`, `pluck` and
 - Synths: `sawtooth square triangle sine supersaw bell pluck sub`
 - Variants like `bd:3` are accepted, but they all play the one built-in kit.
 
-Everything is synthesized, so there are no sample files.
+Everything is synthesized, so there are no sample files. Strudel names play
+the nearest built-in sound:
+- `perc` → `cb`, `ride` / `crash` → `cr`, `sh` → `hh`, `tom` → `mt`.
+- `tr909_bd` → `bd`.
+- Soundfont and ZZFX names pick a synth from the name: `gm_lead_2_sawtooth` →
+  sawtooth, `z_sine` → sine, `gm_..._bass` → sub. Others play triangle.
+
+**Chords:** `chord("AM9#11 AM7 AM13")` plays each chord close-voiced, with the
+top note at or just below C5. It knows major, `m`, `7`, `M7` / `^7` / `maj7`,
+`m7`, `6`, `69`, `9`, `M9`, `m9`, `11`, `13`, `M13`, `sus2`, `sus4`, `dim`,
+`o7`, `m7b5` / `ø`, `aug` and `add9`, plus alterations like `#11`, `b9`,
+`#9`, `b13` and `#5`. `.voicing()` is accepted, and chords are always voiced
+this way, an approximation of Strudel's voicings.
 
 ### Effects and sound
 
@@ -165,6 +179,7 @@ Everything is synthesized, so there are no sample files.
 | `.pan()` | 0 = left, .5 = center, 1 = right |
 | `.attack()` `.decay()` `.sustain()` `.release()` `.adsr(".01:.1:.5:.2")` | envelope |
 | `.fm()` `.fmh()` | FM synthesis: index and harmonic ratio |
+| `.fmattack()` `.fmdecay()` `.fmsustain()` `.fmrelease()` `.fmenv("exp")` | an envelope on the FM amount. With only `fmdecay`, it falls to 0, so the tone starts bright and settles. `fmenv` is `lin` or `exp` |
 | `.detune()` | spread of the `supersaw`'s five saws, in semitones (default .2). `.detune(rand)` makes every note different |
 | `.vib()` `.vibmod()` | vibrato: rate in Hz, depth in semitones |
 | `.speed()` | playback speed: `2` = octave up, negative plays drums backwards |
@@ -172,9 +187,9 @@ Everything is synthesized, so there are no sample files.
 | `.cut(1)` | choke group: a new note cuts off ringing ones in the same group |
 | `.transpose()` | semitones |
 | `.scale("C4:minor")` | turns `n()` numbers (and `note()` numbers, like `note(run(8))`) into notes. Write spaces as `:`, like `"Ab:minor:pentatonic"`. With no octave, the root is in octave 3. It can be a pattern: `"<C:major A:minor>"` |
-| `.o(3)` / `.orbit(3)` | which orbit (group) the pattern plays on, for ducking. Default 1 |
+| `.o(3)` / `.orbit(3)` | which orbit (group) the pattern plays on, for ducking. Default 1. `"2:3:4"` puts it on several, and any of them ducking dips it |
 | `.duck("4:5:6")` `.duckatt()` `.duckdepth()` | sidechain: each note of this pattern dips orbits 4, 5 and 6, which come back over `duckatt` seconds (default .1). `duckdepth` is 0–1 (default 1). Lists like `"2:1"` go one per orbit (aliases `duckorbit`, `duckattack`) |
-| `.bank()` `.color()` `._pianoroll()` `._scope()` … | accepted so Strudel code runs; they do nothing here (jynx has one built-in drum kit) |
+| `.bank()` `.end()` `.begin()` `.fmwave()` `.color()` `._pianoroll()` `._scope()` … | accepted so Strudel code runs; they do nothing here (jynx has one built-in drum kit) |
 
 ### Pattern functions
 
@@ -191,7 +206,7 @@ Everything is synthesized, so there are no sample files.
 | `.press()` `.brak()` | push onto the off-beat / breakbeat variation |
 | `.struct("x ~ x x")` `.mask("1 0 1 1")` | impose a rhythm / silence parts |
 | `.euclid(3,8)` `.euclidRot(3,8,2)` `.euclidLegato(3,8)` | euclidean rhythms |
-| `.segment(4)` | sample a pattern (or a signal) 4 times a cycle |
+| `.segment(4)` / `.seg(4)` | sample a pattern (or a signal) 4 times a cycle |
 | `.arp("0 2 1")` `.arpeggiate()` | play chords as arpeggios |
 | `.add(12)` `.sub(12)` | shift notes: semitones for `note()`, scale steps for `n()` |
 | `.degrade()` `.degradeBy(.3)` | randomly drop events |
@@ -259,9 +274,8 @@ like `fast` reads the signal 16 times a cycle. Like on strudel.cc, a signal on
 a timing function (`fast`, `late`, `ply`, ...) can make an event play twice or
 not at all at the moment the value changes, which is part of the sound.
 
-**Not supported yet:** `stack()` / `cat()` at the top level, `chord()` /
-`voicing()`, and sample functions like `chop`, `striate` and `loopAt`. jynx
-has no sample files.
+**Not supported yet:** `stack()` / `cat()` at the top level, and sample
+functions like `chop`, `striate` and `loopAt`. jynx has no sample files.
 
 When you edit, **pattern changes apply at the next cycle**, so they always land
 on the beat. **Fixed effect values apply immediately**, so knobs feel live. If

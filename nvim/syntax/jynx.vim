@@ -3,7 +3,7 @@ if exists("b:current_syntax") | finish | endif
 " Strudel-style code: labels, calls, numbers
 syn match   jynxLabel    "^[A-Za-z0-9$][A-Za-z0-9_$]*\ze\s*:"
 syn match   jynxMuted    "^_[A-Za-z0-9_$]*\ze\s*:"
-syn match   jynxHead     "\<\(s\|sound\|note\|n\)\ze("
+syn match   jynxHead     "\<\(s\|sound\|note\|n\|chord\)\ze("
 syn match   jynxMethod   "\.\zs[A-Za-z_]\w*\ze\s*("
 syn keyword jynxGlobal   setcpm setcps hush let const var
 syn keyword jynxSlider   slider
